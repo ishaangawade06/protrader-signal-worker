@@ -1,4 +1,3 @@
-# main.py
 import os, json, time, traceback
 from datetime import datetime, timezone
 import requests
@@ -16,7 +15,7 @@ from firebase_admin import credentials, firestore, messaging
 # CONFIG
 FIREBASE_SECRET_ENV = "FIREBASE_SERVICE_ACCOUNT"
 FCM_TOPIC = os.environ.get("FCM_TOPIC", "signals")
-ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")
+ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")  # kept if needed later
 
 # Helper: initialize Firebase from secret JSON string
 def init_firebase_from_env():
@@ -26,6 +25,7 @@ def init_firebase_from_env():
     try:
         service_account_info = json.loads(raw)
     except Exception:
+        # maybe it's base64-encoded; try decode
         import base64
         service_account_info = json.loads(base64.b64decode(raw).decode())
     cred = credentials.Certificate(service_account_info)
@@ -36,18 +36,17 @@ db = None
 
 # --- Data fetcher using yfinance ---
 def symbol_to_yf(symbol, market):
-    """Map symbols to yfinance format."""
-    s = str(symbol).strip()
+    s = symbol.strip()
     if market == 'crypto':
         if s.endswith('USDT'):
-            return s[:-4] + '-USD'
+            return s[:-4] + '-USD'   # BTCUSDT -> BTC-USD
         if s.endswith('USD'):
             return s[:-3] + '-USD'
         return s
     if market == 'forex':
-        if not s.endswith('=X'):
-            return s + '=X'
-        return s
+        if s.endswith('=X'):
+            return s
+        return s + '=X'
     return s
 
 def fetch_yahoo_data(symbol, market, interval='1m', limit=200):
@@ -58,16 +57,28 @@ def fetch_yahoo_data(symbol, market, interval='1m', limit=200):
     try:
         df = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False)
     except Exception as e:
-        raise RuntimeError(f"yfinance error for {yf_symbol}: {e}")
+        raise RuntimeError(f"yfinance download error for {yf_symbol}: {e}")
+
     if df is None or df.empty:
-        raise RuntimeError(f"No data returned for {yf_symbol}")
-    df = df.rename(columns={c: c.lower() for c in df.columns})
-    if 'close' not in df.columns:
-        raise RuntimeError(f"No close column for {yf_symbol}")
+        raise RuntimeError(f"No data returned from yfinance for {yf_symbol} interval={interval}")
+
+    # ✅ Fix: Flatten MultiIndex if needed
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ["_".join([str(c) for c in col if c]) for col in df.columns.values]
+
+    # Rename columns to lowercase
+    df = df.rename(columns={c: str(c).lower() for c in df.columns})
+
+    # Ensure required columns exist
+    for col in ['open','high','low','close','volume']:
+        if col not in df.columns:
+            raise RuntimeError(f"Missing expected column {col} in {yf_symbol}")
+
     df = df.tail(limit)
+
+    # Ensure numeric types
     for c in ['open','high','low','close','volume']:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
+        df[c] = pd.to_numeric(df[c], errors='coerce')
     df = df.dropna(subset=['close'])
     df.index.name = 'open_time'
     return df
@@ -93,7 +104,8 @@ def add_indicators(df):
 def compute_signal(df):
     if len(df) < 5:
         return {'signal':'HOLD', 'reasons':['insufficient data']}
-    last, prev = df.iloc[-1], df.iloc[-2]
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
     reasons = []
     cross_up = (prev['sma_fast'] <= prev['sma_slow']) and (last['sma_fast'] > last['sma_slow'])
     cross_down = (prev['sma_fast'] >= prev['sma_slow']) and (last['sma_fast'] < last['sma_slow'])
@@ -120,14 +132,18 @@ def compute_support_resistance(df, lookback=50):
         resistances = [round(float(closes.max()),4)]
     return supports, resistances
 
+# push to Firestore
 def push_signal_to_firestore(doc):
     global db
-    db.collection('signals').add(doc)
-    print(f"Pushed: {doc.get('symbol')} {doc.get('signal')}")
+    col = db.collection('signals')
+    col.add(doc)
+    print(f"Pushed signal: {doc.get('symbol')} {doc.get('signal')}")
 
+# send FCM topic notification
 def send_fcm(title, body, data=None, topic=None):
     try:
-        topic = topic or FCM_TOPIC
+        if topic is None:
+            topic = FCM_TOPIC
         msg = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
             topic=topic,
@@ -139,10 +155,9 @@ def send_fcm(title, body, data=None, topic=None):
         print("FCM error:", e)
 
 def process_symbol(cfg):
-    symbol = str(cfg.get('symbol', '')).strip()
-    market = str(cfg.get('market', 'crypto')).lower()
-    interval = str(cfg.get('interval', '1m')).lower()
-    print("Processing:", symbol, type(symbol))
+    symbol = cfg['symbol']
+    market = cfg.get('market','crypto')
+    interval = cfg.get('interval','1m')
     try:
         df = fetch_yahoo_data(symbol, market, interval=interval, limit=200)
         df = add_indicators(df)
@@ -152,6 +167,7 @@ def process_symbol(cfg):
         entry_price = last_price
         stop_loss = round(last_price * 0.99, 8)
         take_profit = round(last_price * 1.02, 8)
+
         risk_percent = float(cfg.get('risk_percent', 2.0))
 
         doc = {
@@ -176,15 +192,18 @@ def process_symbol(cfg):
             "timestamp": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
             "risk_meta": {
                 "risk_percent": risk_percent,
-                "notes": "App should calculate position size based on user balance and risk."
+                "notes": "To compute position size for a user: risk_amount = user_balance * (risk_percent/100). "
+                         "units = risk_amount / abs(entry - stop_loss). Then position_value = units * entry_price. "
+                         "Mobile app should compute this using the user's connected broker balance."
             }
         }
         push_signal_to_firestore(doc)
+
         if sig['signal'] in ('BUY','SELL'):
             title = f"ProTraderHack {sig['signal']} {symbol}"
-            body = f"{sig['signal']} {symbol} @ {last_price:.4f}"
+            body = f"{sig['signal']} {symbol} @ {last_price:.4f} - {', '.join(sig.get('reasons',[]))}"
             send_fcm(title, body, data={"symbol": symbol, "signal": sig['signal']}, topic=FCM_TOPIC)
-            topic_safe = ("signals_" + symbol.replace(".", "_")).lower()
+            topic_safe = ("signals_" + symbol.replace(".", "_").replace("/", "_")).lower()
             send_fcm(title, body, data={"symbol": symbol, "signal": sig['signal']}, topic=topic_safe)
 
     except Exception as e:
@@ -199,8 +218,9 @@ def main():
     global db
     db = init_firebase_from_env()
     symbols = load_symbols()
-    print("Loaded:", symbols)
+    print("Loaded symbols:", symbols)
     for cfg in symbols:
+        print("Processing:", cfg['symbol'], type(cfg['symbol']))
         process_symbol(cfg)
 
 if __name__ == "__main__":
