@@ -1,92 +1,57 @@
+import yfinance as yf
+import pandas as pd
 import json
 import time
-import traceback
-import yfinance as yf
+from datetime import datetime
+import os
 
-# -------------------------------
-# Load symbols from symbols.json
-# -------------------------------
-def load_symbols():
-    with open("symbols.json", "r") as f:
-        data = json.load(f)
-    return data["symbols"]
+# Load symbols
+with open("symbols.json", "r") as f:
+    SYMBOLS = json.load(f)
 
-# -------------------------------
-# Fetch data from Yahoo Finance
-# -------------------------------
-def fetch_yahoo_data(symbol, market, interval="1m", limit=200):
-    # Map symbol for Yahoo Finance
-    if market == "crypto":
-        yf_symbol = symbol.replace("USDT", "-USD")   # BTCUSDT -> BTC-USD
-    elif market == "indian":
-        yf_symbol = symbol                           # RELIANCE.NS
-    elif market == "forex":
-        yf_symbol = symbol + "=X"                    # XAUUSD -> XAUUSD=X
-    else:
-        raise ValueError(f"Unsupported market: {market}")
-
-    # Choose period based on interval
-    period = "7d" if interval in ["1m", "5m", "15m"] else "1y"
-
-    # Download data
-    df = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False)
-
-    if df.empty:
-        raise RuntimeError(f"No data received for {yf_symbol}")
-
-    # Flatten multi-index columns (e.g., ('Open','BTC-USD')) → 'open'
-    df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
-
-    # Ensure required OHLCV columns exist
-    expected_cols = ["open", "high", "low", "close", "volume"]
-    for col in expected_cols:
-        if col not in df.columns:
-            raise RuntimeError(f"Missing expected column {col} in {yf_symbol}")
-
-    return df.tail(limit)
-
-# -------------------------------
-# Process one symbol
-# -------------------------------
-def process_symbol(symbol_config):
+def fetch_yahoo_data(symbol, market, interval="1h", limit=200):
     try:
-        symbol = symbol_config["symbol"]
-        market = symbol_config["market"]
-        interval = symbol_config.get("interval", "1m")
+        df = yf.download(symbol, period="60d", interval=interval, progress=False)
 
-        print(f"Processing: {symbol} ({market}, {interval})")
+        if df is None or df.empty:
+            print(f"❌ No data received for {symbol}")
+            return None
 
-        # Fetch data
-        df = fetch_yahoo_data(symbol, market, interval=interval, limit=200)
-
-        # Debug: show last 2 rows
-        print(df.tail(2))
-
-        # TODO: Here you will add:
-        # - Chart pattern recognition
-        # - Support/Resistance levels
-        # - Buy/Sell signals
-        # - Capital allocation logic
-
+        df.reset_index(inplace=True)
+        df = df.tail(limit)
+        return df
     except Exception as e:
-        print(f"Error processing {symbol}: {e}")
-        traceback.print_exc()
+        print(f"⚠️ Failed to fetch {symbol}: {e}")
+        return None
 
-# -------------------------------
-# Run worker loop
-# -------------------------------
-def run_worker():
-    symbols = load_symbols()
-    print("Loaded symbols:", symbols)
+def process_symbol(symbol, market, interval="1h"):
+    df = fetch_yahoo_data(symbol, market, interval=interval, limit=200)
+    if df is None:
+        return None
 
+    try:
+        output_dir = "data"
+        os.makedirs(output_dir, exist_ok=True)
+
+        file_path = os.path.join(output_dir, f"{market}_{symbol.replace('=', '').replace('-', '')}.csv")
+        df.to_csv(file_path, index=False)
+
+        print(f"✅ Saved {symbol} ({market}) -> {file_path}")
+        return file_path
+    except Exception as e:
+        print(f"⚠️ Error saving {symbol}: {e}")
+        return None
+
+def main():
     while True:
-        for sym in symbols:
-            process_symbol(sym)
-        print("Sleeping 30s before next run...\n")
-        time.sleep(30)
+        print(f"\n🔄 Running fetch at {datetime.now()}")
 
-# -------------------------------
-# Main entry
-# -------------------------------
+        for market, symbols in SYMBOLS.items():
+            for symbol in symbols:
+                process_symbol(symbol, market, interval="1h")
+
+        print("⏳ Sleeping for 5 minutes...\n")
+        time.sleep(300)
+
 if __name__ == "__main__":
-    run_worker()
+    main()
