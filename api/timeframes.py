@@ -1,84 +1,67 @@
-# api/timeframes.py
-import os, json, time
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask import Blueprint, request, jsonify
 import yfinance as yf
 
-app = Flask(__name__)
-CORS(app)
+timeframes_bp = Blueprint("timeframes", __name__)
 
-# static supported intervals per market (base guidance)
-SUPPORTED_INTERVALS = {
-    "crypto": ["1m","2m","5m","15m","30m","60m","90m","1d","5d","1wk","1mo","3mo"],
-    "indian": ["5m","15m","30m","60m","1d","5d","1wk","1mo","3mo"],
-    "forex":  ["15m","30m","60m","1d","5d","1wk","1mo","3mo"],
-    "us":     ["1m","2m","5m","15m","30m","60m","90m","1d","5d","1wk","1mo","3mo"]
+# Mapping of allowed intervals per market
+ALLOWED_INTERVALS = {
+    "crypto": ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"],
+    "indian": ["5m", "15m", "30m", "1h", "1d", "1wk"],
+    "forex": ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"]
 }
 
-# simple in-memory cache: { cache_key: (expire_ts, result_list) }
-_AVAIL_CACHE = {}
-CACHE_TTL_SECONDS = int(os.environ.get("TIMEFRAME_CACHE_TTL", "3600"))  # default 1 hour
-
-def infer_market_from_symbol(symbol: str) -> str:
-    s = symbol.strip().upper()
-    # explicit NSE suffix
-    if s.endswith(".NS"):
-        return "indian"
-    # crypto common suffixes
-    if s.endswith("USDT") or s.endswith("-USD") or s.endswith("BTC") or s.endswith("ETH"):
+def infer_market(symbol: str):
+    """Very basic symbol inference"""
+    if symbol.endswith("USDT"):
         return "crypto"
-    # forex / commodities like XAUUSD, EURUSD, GBPUSD, USDINR
-    # many forex tickers are 6 letters ending with USD or similar
-    if len(s) >= 6 and (s.endswith("USD") or s.endswith("INR") or s.endswith("EUR")):
+    if symbol.endswith(".NS"):
+        return "indian"
+    if symbol.endswith("USD") or symbol in ["XAUUSD", "EURUSD", "GBPUSD"]:
         return "forex"
-    # fallback to US
-    return "us"
+    return None
 
-def _yf_symbol_for_market(symbol: str, market: str) -> str:
-    s = symbol.strip()
-    if market == "crypto":
-        if s.endswith("USDT"):
-            return s[:-4] + "-USD"
-        if s.endswith("USD"):
-            return s[:-3] + "-USD"
-        return s
-    if market == "forex":
-        # yahoo: XAUUSD -> XAUUSD=X ; EURUSD -> EURUSD=X
-        if s.endswith("=X"):
-            return s
-        return s + "=X"
-    # indian, us equities: pass through
-    return s
-
-def _verify_interval_available(yf_symbol: str, interval: str) -> bool:
+def verify_interval(symbol, interval):
     """
-    Try a minimal yfinance download for this interval. Return True if data present.
-    Keep call lightweight: small period per interval type.
+    Try to fetch small data with yfinance to verify if timeframe works
     """
     try:
-        # choose short period for intraday intervals
-        period = "7d" if interval in ["1m","2m","5m","15m","30m"] else "1y"
-        df = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False)
-        if df is None or df.empty:
-            return False
-        # flatten possible MultiIndex and check 'close' presence
-        cols = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        cols_lower = [str(c).lower() for c in cols]
-        return 'close' in cols_lower and len(df) > 0
+        df = yf.download(tickers=symbol, period="1d", interval=interval, progress=False)
+        return not df.empty
     except Exception:
         return False
 
-@app.route("/timeframes", methods=["GET"])
+@timeframes_bp.route("/timeframes", methods=["GET"])
 def timeframes():
     """
     GET /timeframes?symbol=BTCUSDT&market=crypto&verify=true
-    - symbol: required (or you can provide market param)
-    - market: optional (if absent, we infer)
-    - verify: optional (true/false). If true the server will try to verify each timeframe actually returns data (slower).
+    - symbol: required (e.g. BTCUSDT, RELIANCE.NS, XAUUSD)
+    - market: optional (crypto, indian, forex). If absent, inferred.
+    - verify: optional (true/false). If true, server will verify each timeframe.
     """
     symbol = request.args.get("symbol", "").strip()
     if not symbol:
-        return jsonify({"error":"symbol required (e.g. BTCUSDT or RELIANCE.NS)"}), 400
+        return jsonify({"error": "symbol required (e.g. BTCUSDT, RELIANCE.NS, XAUUSD)"}), 400
 
-    market = request.args.get("
+    market = request.args.get("market", "").strip()
+    if not market:
+        market = infer_market(symbol)
+
+    if not market or market not in ALLOWED_INTERVALS:
+        return jsonify({"error": f"could not infer market for {symbol}"}), 400
+
+    verify = request.args.get("verify", "false").lower() == "true"
+
+    intervals = ALLOWED_INTERVALS[market]
+
+    if verify:
+        valid = []
+        for interval in intervals:
+            if verify_interval(symbol, interval):
+                valid.append(interval)
+        intervals = valid
+
+    return jsonify({
+        "symbol": symbol,
+        "market": market,
+        "intervals": intervals
+    })
