@@ -1,3 +1,4 @@
+# main.py
 import os, json, time, traceback
 from datetime import datetime, timezone
 import requests
@@ -15,7 +16,7 @@ from firebase_admin import credentials, firestore, messaging
 # CONFIG
 FIREBASE_SECRET_ENV = "FIREBASE_SERVICE_ACCOUNT"
 FCM_TOPIC = os.environ.get("FCM_TOPIC", "signals")
-ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")  # kept if needed later
+ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "")
 
 # Helper: initialize Firebase from secret JSON string
 def init_firebase_from_env():
@@ -35,7 +36,8 @@ db = None
 
 # --- Data fetcher using yfinance ---
 def symbol_to_yf(symbol, market):
-    s = symbol.strip()
+    """Map symbols to yfinance format."""
+    s = str(symbol).strip()
     if market == 'crypto':
         if s.endswith('USDT'):
             return s[:-4] + '-USD'
@@ -43,9 +45,9 @@ def symbol_to_yf(symbol, market):
             return s[:-3] + '-USD'
         return s
     if market == 'forex':
-        if s.endswith('=X'):
-            return s
-        return s + '=X'
+        if not s.endswith('=X'):
+            return s + '=X'
+        return s
     return s
 
 def fetch_yahoo_data(symbol, market, interval='1m', limit=200):
@@ -56,12 +58,12 @@ def fetch_yahoo_data(symbol, market, interval='1m', limit=200):
     try:
         df = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False)
     except Exception as e:
-        raise RuntimeError(f"yfinance download error for {yf_symbol}: {e}")
+        raise RuntimeError(f"yfinance error for {yf_symbol}: {e}")
     if df is None or df.empty:
-        raise RuntimeError(f"No data returned from yfinance for {yf_symbol} interval={interval}")
+        raise RuntimeError(f"No data returned for {yf_symbol}")
     df = df.rename(columns={c: c.lower() for c in df.columns})
     if 'close' not in df.columns:
-        raise RuntimeError(f"No close column returned for {yf_symbol}")
+        raise RuntimeError(f"No close column for {yf_symbol}")
     df = df.tail(limit)
     for c in ['open','high','low','close','volume']:
         if c in df.columns:
@@ -91,8 +93,8 @@ def add_indicators(df):
 def compute_signal(df):
     if len(df) < 5:
         return {'signal':'HOLD', 'reasons':['insufficient data']}
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    last, prev = df.iloc[-1], df.iloc[-2]
+    reasons = []
     cross_up = (prev['sma_fast'] <= prev['sma_slow']) and (last['sma_fast'] > last['sma_slow'])
     cross_down = (prev['sma_fast'] >= prev['sma_slow']) and (last['sma_fast'] < last['sma_slow'])
     macd_cross_up = (prev['macd'] <= prev['macd_signal']) and (last['macd'] > last['macd_signal'])
@@ -120,14 +122,12 @@ def compute_support_resistance(df, lookback=50):
 
 def push_signal_to_firestore(doc):
     global db
-    col = db.collection('signals')
-    col.add(doc)
-    print(f"Pushed signal: {doc.get('symbol')} {doc.get('signal')}")
+    db.collection('signals').add(doc)
+    print(f"Pushed: {doc.get('symbol')} {doc.get('signal')}")
 
 def send_fcm(title, body, data=None, topic=None):
     try:
-        if topic is None:
-            topic = FCM_TOPIC
+        topic = topic or FCM_TOPIC
         msg = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
             topic=topic,
@@ -139,9 +139,10 @@ def send_fcm(title, body, data=None, topic=None):
         print("FCM error:", e)
 
 def process_symbol(cfg):
-    symbol = cfg['symbol']
-    market = cfg.get('market','crypto')
-    interval = cfg.get('interval','1m')
+    symbol = str(cfg.get('symbol', '')).strip()
+    market = str(cfg.get('market', 'crypto')).lower()
+    interval = str(cfg.get('interval', '1m')).lower()
+    print("Processing:", symbol, type(symbol))
     try:
         df = fetch_yahoo_data(symbol, market, interval=interval, limit=200)
         df = add_indicators(df)
@@ -151,7 +152,6 @@ def process_symbol(cfg):
         entry_price = last_price
         stop_loss = round(last_price * 0.99, 8)
         take_profit = round(last_price * 1.02, 8)
-
         risk_percent = float(cfg.get('risk_percent', 2.0))
 
         doc = {
@@ -176,17 +176,15 @@ def process_symbol(cfg):
             "timestamp": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
             "risk_meta": {
                 "risk_percent": risk_percent,
-                "notes": "To compute position size: risk_amount = user_balance * (risk_percent/100). "
-                         "units = risk_amount / abs(entry - stop_loss). position_value = units * entry_price."
+                "notes": "App should calculate position size based on user balance and risk."
             }
         }
         push_signal_to_firestore(doc)
-
         if sig['signal'] in ('BUY','SELL'):
             title = f"ProTraderHack {sig['signal']} {symbol}"
-            body = f"{sig['signal']} {symbol} @ {last_price:.4f} - {', '.join(sig.get('reasons',[]))}"
+            body = f"{sig['signal']} {symbol} @ {last_price:.4f}"
             send_fcm(title, body, data={"symbol": symbol, "signal": sig['signal']}, topic=FCM_TOPIC)
-            topic_safe = ("signals_" + symbol.replace(".", "_").replace("/", "_")).lower()
+            topic_safe = ("signals_" + symbol.replace(".", "_")).lower()
             send_fcm(title, body, data={"symbol": symbol, "signal": sig['signal']}, topic=topic_safe)
 
     except Exception as e:
@@ -195,29 +193,13 @@ def process_symbol(cfg):
 
 def load_symbols():
     with open('symbols.json','r') as f:
-        raw = json.load(f).get('symbols', [])
-
-    normalized = []
-    for item in raw:
-        if isinstance(item, dict):
-            normalized.append(item)
-        elif isinstance(item, (list, tuple)):
-            obj = {"symbol": item[0]}
-            obj["market"] = item[1] if len(item) > 1 else "crypto"
-            obj["interval"] = item[2] if len(item) > 2 else "1m"
-            print(f"[WARN] Converted tuple/list {item} -> {obj}")
-            normalized.append(obj)
-        elif isinstance(item, str):
-            obj = {"symbol": item, "market": "crypto", "interval": "1m"}
-            print(f"[WARN] Converted string '{item}' -> {obj}")
-            normalized.append(obj)
-    return normalized
+        return json.load(f).get('symbols', [])
 
 def main():
     global db
     db = init_firebase_from_env()
     symbols = load_symbols()
-    print("Loaded symbols:", symbols)
+    print("Loaded:", symbols)
     for cfg in symbols:
         process_symbol(cfg)
 
