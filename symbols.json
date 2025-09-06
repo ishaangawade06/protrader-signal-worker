@@ -1,22 +1,8 @@
 {
   "symbols": [
-    {
-      "symbol": "BTCUSDT",
-      "market": "crypto",
-      "interval": "1m",
-      "risk_percent": 2
-    },
-    {
-      "symbol": "ETHUSDT",
-      "market": "crypto",
-      "interval": "1m",
-      "risk_percent": 2
-    },
-    {
-      "symbol": "RELIANCE.NS",
-      "market": "indian",
-      "interval": "5m",
-      "risk_percent": 2
-    }
+    {"symbol": "BTCUSDT", "market": "crypto", "interval": "1m", "risk_percent": 2},
+    {"symbol": "ETHUSDT", "market": "crypto", "interval": "1m", "risk_percent": 2},
+    {"symbol": "RELIANCE.NS", "market": "indian", "interval": "5m", "risk_percent": 2},
+    {"symbol": "XAUUSD", "market": "forex", "interval": "15m", "risk_percent": 2}
   ]
 }
