@@ -1,80 +1,133 @@
 import os
 import json
-import time
-import traceback
 import yfinance as yf
 import pandas as pd
+from flask import Flask, jsonify, request
 
-# Load all symbols with verified timeframes
-SYMBOLS_FILE = os.path.join(os.path.dirname(__file__), "symbols.json")
+# ----------------------------
+# Load symbols from JSON file
+# ----------------------------
+with open("symbols.json", "r") as f:
+    SYMBOLS_DATA = json.load(f)
 
-def load_symbols():
-    with open(SYMBOLS_FILE, "r") as f:
-        return json.load(f)
+def get_all_symbols():
+    """Flatten all symbols into a list with market tags."""
+    all_symbols = []
+    for market, symbols in SYMBOLS_DATA.items():
+        for s in symbols:
+            all_symbols.append({
+                "symbol": s["symbol"],
+                "yf_symbol": s["yf_symbol"],
+                "name": s["name"],
+                "market": market
+            })
+    return all_symbols
 
-def map_symbol(symbol, market):
-    """Map to Yahoo Finance ticker"""
-    if market == "crypto":
-        return symbol.replace("USDT", "-USD")
-    elif market == "forex":
-        return symbol + "=X"
-    else:
-        return symbol
+ALL_SYMBOLS = get_all_symbols()
 
-def fetch_yahoo_data(symbol, market, interval, limit=200):
-    yf_symbol = map_symbol(symbol, market)
+# ----------------------------
+# Fetch Data
+# ----------------------------
+def fetch_yahoo_data(yf_symbol, interval="5m", period="5d"):
     try:
-        df = yf.download(
-            tickers=yf_symbol,
-            period="5d",
-            interval=interval,
-            progress=False
-        )
-        if df.empty:
+        df = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False)
+        if df is None or df.empty:
             raise RuntimeError(f"No data received for {yf_symbol}")
-        df.reset_index(inplace=True)
-        df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-        required = ["open", "high", "low", "close"]
-        for col in required:
-            if col not in df.columns:
-                raise RuntimeError(f"Missing expected column {col} in {yf_symbol}")
-        return df.tail(limit)
+
+        # Fix multi-index column issue
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower().replace(" ", "_") for c in df.columns]
+        else:
+            df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
+
+        return df
     except Exception as e:
         raise RuntimeError(f"Failed to fetch {yf_symbol} ({interval}): {e}")
 
-def analyze(df):
-    """Very simple signal generator (placeholder)"""
-    if df["close"].iloc[-1] > df["close"].iloc[-2]:
-        return "BUY"
-    else:
-        return "SELL"
+# ----------------------------
+# Risk Management
+# ----------------------------
+def calculate_position_size(balance, risk_percent, entry_price, stop_loss_price):
+    """
+    Calculate position size based on account balance, risk %, and stop loss.
+    """
+    risk_amount = balance * (risk_percent / 100.0)
+    per_unit_risk = abs(entry_price - stop_loss_price)
+    if per_unit_risk == 0:
+        return 0
+    position_size = risk_amount / per_unit_risk
+    return round(position_size, 4)
 
-def process_symbol(symbol_entry):
-    symbol = symbol_entry["symbol"]
-    market = symbol_entry.get("market", "stock")
-    timeframes = symbol_entry.get("timeframes", [])
+# ----------------------------
+# Flask API
+# ----------------------------
+app = Flask(__name__)
 
-    if not timeframes:
-        print(f"⚠️ No verified timeframes for {symbol}, skipping...")
-        return
+@app.route("/symbols", methods=["GET"])
+def list_symbols():
+    """Return all available symbols with markets and names"""
+    return jsonify(ALL_SYMBOLS)
 
-    for interval in timeframes:
+@app.route("/timeframes", methods=["GET"])
+def timeframes():
+    """
+    GET /timeframes?symbol=BTC-USD
+    Returns list of available intervals for this symbol
+    """
+    yf_symbol = request.args.get("symbol", "").strip()
+    if not yf_symbol:
+        return jsonify({"error": "symbol required"}), 400
+
+    intervals = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"]
+    valid = []
+    for interval in intervals:
         try:
-            df = fetch_yahoo_data(symbol, market, interval=interval, limit=200)
-            signal = analyze(df)
-            print(f"[{symbol} | {interval}] → {signal}")
-        except Exception as e:
-            print(f"Error processing {symbol} {interval}: {e}")
-            traceback.print_exc()
+            df = fetch_yahoo_data(yf_symbol, interval=interval, period="5d")
+            if df is not None and not df.empty:
+                valid.append(interval)
+        except Exception:
+            continue
 
-def run_worker():
-    while True:
-        symbols = load_symbols()
-        print(f"Loaded {len(symbols)} symbols")
-        for s in symbols:
-            process_symbol(s)
-        print("Cycle complete, sleeping 60s...\n")
-        time.sleep(60)
+    return jsonify({"symbol": yf_symbol, "valid_timeframes": valid})
+
+@app.route("/position-size", methods=["GET"])
+def position_size():
+    """
+    Example: /position-size?balance=10000&risk_percent=2&entry=2000&stop=1950
+    """
+    try:
+        balance = float(request.args.get("balance", "0"))
+        risk_percent = float(request.args.get("risk_percent", "1"))
+        entry_price = float(request.args.get("entry", "0"))
+        stop_loss_price = float(request.args.get("stop", "0"))
+
+        size = calculate_position_size(balance, risk_percent, entry_price, stop_loss_price)
+        return jsonify({
+            "balance": balance,
+            "risk_percent": risk_percent,
+            "entry_price": entry_price,
+            "stop_loss_price": stop_loss_price,
+            "position_size": size
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+# ----------------------------
+# Signal Processing Worker
+# ----------------------------
+def process_symbol(yf_symbol, interval="5m"):
+    try:
+        df = fetch_yahoo_data(yf_symbol, interval=interval, period="5d")
+        print(f"✅ Processed {yf_symbol} with {len(df)} rows at interval {interval}")
+        return True
+    except Exception as e:
+        print(f"❌ Error processing {yf_symbol}: {e}")
+        return False
 
 if __name__ == "__main__":
-    run_worker()
+    # Manual test run
+    for sym in ALL_SYMBOLS:
+        process_symbol(sym["yf_symbol"], interval="5m")
+    
+    # Uncomment to run Flask API locally
+    # app.run(host="0.0.0.0", port=5000, debug=True)
