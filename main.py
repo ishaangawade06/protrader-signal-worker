@@ -1,57 +1,81 @@
-import yfinance as yf
-import pandas as pd
 import json
 import time
-from datetime import datetime
-import os
+import ccxt
+import yfinance as yf
+import pandas as pd
 
-# Load symbols
+# ----------------------------
+# Load Symbols
+# ----------------------------
 with open("symbols.json", "r") as f:
-    SYMBOLS = json.load(f)
+    SYMBOLS = json.load(f)["symbols"]
 
-def fetch_yahoo_data(symbol, market, interval="1h", limit=200):
+# ----------------------------
+# Fetch Yahoo Data (Stocks, Forex)
+# ----------------------------
+def fetch_yahoo_data(symbol, market, interval="1m", limit=200):
+    yf_symbol = symbol
+    if market == "crypto":
+        yf_symbol = symbol.replace("USDT", "-USD")  # BTCUSDT -> BTC-USD
+    elif market == "forex":
+        yf_symbol = symbol + "=X"  # EURUSD -> EURUSD=X
+
+    for attempt in range(3):
+        try:
+            df = yf.download(
+                tickers=yf_symbol,
+                period="5d",
+                interval=interval,
+                progress=False,
+                auto_adjust=False,
+                threads=False,
+            )
+            if not df.empty:
+                df = df.rename(columns={str(c).lower(): str(c).lower() for c in df.columns})
+                for col in ["open", "high", "low", "close"]:
+                    if col not in df.columns:
+                        raise RuntimeError(f"Missing expected column {col} in {yf_symbol}")
+                return df
+        except Exception as e:
+            print(f"[Retry {attempt+1}] Failed to fetch {yf_symbol}: {e}")
+        time.sleep(2)
+
+    raise RuntimeError(f"Yahoo Finance failed after retries for {yf_symbol}")
+
+# ----------------------------
+# Fetch Crypto Data (Binance)
+# ----------------------------
+def fetch_binance_data(symbol, interval="1m", limit=200):
+    exchange = ccxt.binance()
+    ohlcv = exchange.fetch_ohlcv(symbol.replace("USDT", "/USDT"), timeframe=interval, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
+
+# ----------------------------
+# Process Symbol
+# ----------------------------
+def process_symbol(symbol_data):
+    symbol = symbol_data["symbol"]
+    market = symbol_data.get("market", "crypto")
+    interval = symbol_data.get("interval", "1m")
+
+    print(f"Processing {symbol} ({market})...")
+
     try:
-        df = yf.download(symbol, period="60d", interval=interval, progress=False)
+        if market == "crypto":
+            df = fetch_binance_data(symbol, interval=interval)
+        else:
+            df = fetch_yahoo_data(symbol, market, interval=interval)
 
-        if df is None or df.empty:
-            print(f"❌ No data received for {symbol}")
-            return None
-
-        df.reset_index(inplace=True)
-        df = df.tail(limit)
-        return df
+        print(f"✅ Got {len(df)} candles for {symbol} on {interval}")
     except Exception as e:
-        print(f"⚠️ Failed to fetch {symbol}: {e}")
-        return None
+        print(f"❌ Error processing {symbol}: {e}")
 
-def process_symbol(symbol, market, interval="1h"):
-    df = fetch_yahoo_data(symbol, market, interval=interval, limit=200)
-    if df is None:
-        return None
-
-    try:
-        output_dir = "data"
-        os.makedirs(output_dir, exist_ok=True)
-
-        file_path = os.path.join(output_dir, f"{market}_{symbol.replace('=', '').replace('-', '')}.csv")
-        df.to_csv(file_path, index=False)
-
-        print(f"✅ Saved {symbol} ({market}) -> {file_path}")
-        return file_path
-    except Exception as e:
-        print(f"⚠️ Error saving {symbol}: {e}")
-        return None
-
-def main():
-    while True:
-        print(f"\n🔄 Running fetch at {datetime.now()}")
-
-        for market, symbols in SYMBOLS.items():
-            for symbol in symbols:
-                process_symbol(symbol, market, interval="1h")
-
-        print("⏳ Sleeping for 5 minutes...\n")
-        time.sleep(300)
-
+# ----------------------------
+# Main Runner
+# ----------------------------
 if __name__ == "__main__":
-    main()
+    print("Loaded symbols:", SYMBOLS)
+    for sym in SYMBOLS:
+        process_symbol(sym)
