@@ -1,46 +1,26 @@
-{
-  "symbols": [
-    {
-      "symbol": "BTCUSDT",
-      "market": "crypto",
-      "interval": "1m",
-      "risk_percent": 2,
-      "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"]
-    },
-    {
-      "symbol": "ETHUSDT",
-      "market": "crypto",
-      "interval": "1m",
-      "risk_percent": 2,
-      "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"]
-    },
-    {
-      "symbol": "RELIANCE.NS",
-      "market": "indian",
-      "interval": "5m",
-      "risk_percent": 2,
-      "timeframes": ["5m", "15m", "1h", "1d", "1wk"]
-    },
-    {
-      "symbol": "TCS.NS",
-      "market": "indian",
-      "interval": "5m",
-      "risk_percent": 2,
-      "timeframes": ["5m", "15m", "1h", "1d", "1wk"]
-    },
-    {
-      "symbol": "XAUUSD",
-      "market": "forex",
-      "interval": "15m",
-      "risk_percent": 2,
-      "timeframes": ["15m", "1h", "4h", "1d", "1wk"]
-    },
-    {
-      "symbol": "EURUSD",
-      "market": "forex",
-      "interval": "15m",
-      "risk_percent": 2,
-      "timeframes": ["15m", "1h", "4h", "1d", "1wk"]
-    }
-  ]
-}
+[
+  {
+    "symbol": "BTCUSDT",
+    "market": "crypto",
+    "risk_percent": 2,
+    "timeframes": ["1m","5m","15m","1h","1d"]
+  },
+  {
+    "symbol": "ETHUSDT",
+    "market": "crypto",
+    "risk_percent": 2,
+    "timeframes": ["1m","5m","15m","1h","1d"]
+  },
+  {
+    "symbol": "RELIANCE.NS",
+    "market": "indian",
+    "risk_percent": 2,
+    "timeframes": ["5m","15m","1h","1d"]
+  },
+  {
+    "symbol": "XAUUSD",
+    "market": "forex",
+    "risk_percent": 2,
+    "timeframes": ["5m","15m","1h","1d","1wk"]
+  }
+]
