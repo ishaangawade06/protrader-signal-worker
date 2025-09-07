@@ -1,19 +1,19 @@
 {
   "crypto": [
-    {"symbol": "BTC", "yf_symbol": "BTC-USD", "name": "Bitcoin"},
-    {"symbol": "ETH", "yf_symbol": "ETH-USD", "name": "Ethereum"}
+    {"symbol": "BTC-USD", "name": "Bitcoin"},
+    {"symbol": "ETH-USD", "name": "Ethereum"}
   ],
   "stocks": [
-    {"symbol": "AAPL", "yf_symbol": "AAPL", "name": "Apple Inc."},
-    {"symbol": "TSLA", "yf_symbol": "TSLA", "name": "Tesla Inc."},
-    {"symbol": "RELIANCE.NS", "yf_symbol": "RELIANCE.NS", "name": "Reliance Industries"},
-    {"symbol": "TCS.NS", "yf_symbol": "TCS.NS", "name": "Tata Consultancy Services"},
-    {"symbol": "INFY.NS", "yf_symbol": "INFY.NS", "name": "Infosys Ltd"}
+    {"symbol": "RELIANCE.NS", "name": "Reliance Industries"},
+    {"symbol": "TCS.NS", "name": "Tata Consultancy Services"},
+    {"symbol": "INFY.NS", "name": "Infosys Ltd"},
+    {"symbol": "AAPL", "name": "Apple Inc."},
+    {"symbol": "TSLA", "name": "Tesla Inc."}
   ],
   "forex": [
-    {"symbol": "EURUSD", "yf_symbol": "EURUSD=X", "name": "Euro / US Dollar"},
-    {"symbol": "GBPUSD", "yf_symbol": "GBPUSD=X", "name": "British Pound / US Dollar"},
-    {"symbol": "USDJPY", "yf_symbol": "USDJPY=X", "name": "US Dollar / Japanese Yen"},
-    {"symbol": "XAUUSD", "yf_symbol": "XAUUSD=X", "name": "Gold / US Dollar"}
+    {"symbol": "EURUSD=X", "name": "EUR / USD"},
+    {"symbol": "GBPUSD=X", "name": "GBP / USD"},
+    {"symbol": "USDJPY=X", "name": "USD / JPY"},
+    {"symbol": "XAUUSD=X", "name": "Gold / USD"}
   ]
 }
