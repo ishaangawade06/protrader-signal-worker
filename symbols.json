@@ -1,17 +1,13 @@
 {
-  "crypto": [
-    "BTC-USD",
-    "ETH-USD"
-  ],
-  "stocks": [
-    "RELIANCE.NS",
-    "TCS.NS",
-    "INFY.NS"
-  ],
-  "forex": [
-    "EURUSD=X",
-    "GBPUSD=X",
-    "USDJPY=X",
-    "XAUUSD=X"
+  "symbols": [
+    {"symbol": "BTCUSDT", "market": "crypto", "interval": "1m", "risk_percent": 2},
+    {"symbol": "ETHUSDT", "market": "crypto", "interval": "1m", "risk_percent": 2},
+    {"symbol": "RELIANCE.NS", "market": "indian", "interval": "5m", "risk_percent": 2},
+    {"symbol": "TCS.NS", "market": "indian", "interval": "5m", "risk_percent": 2},
+    {"symbol": "INFY.NS", "market": "indian", "interval": "5m", "risk_percent": 2},
+    {"symbol": "EURUSD", "market": "forex", "interval": "15m", "risk_percent": 2},
+    {"symbol": "GBPUSD", "market": "forex", "interval": "15m", "risk_percent": 2},
+    {"symbol": "USDJPY", "market": "forex", "interval": "15m", "risk_percent": 2},
+    {"symbol": "XAUUSD", "market": "forex", "interval": "15m", "risk_percent": 2}
   ]
 }
