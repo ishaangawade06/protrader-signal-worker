@@ -1,154 +1,86 @@
+import os
 import json
-import time
-import ccxt
 import yfinance as yf
-import pandas as pd
-from flask import Flask, request, jsonify
+from datetime import datetime
+import time
 
-app = Flask(__name__)
+# Path to symbols.json
+SYMBOLS_FILE = os.path.join(os.path.dirname(__file__), "symbols.json")
 
-# -------------------------------
-# Load Symbols
-# -------------------------------
-with open("symbols.json", "r") as f:
-    SYMBOLS = json.load(f)["symbols"]
+# Valid Yahoo Finance intervals
+VALID_INTERVALS = [
+    "1m", "2m", "5m", "15m", "30m", "60m", "90m",
+    "1h", "1d", "5d", "1wk", "1mo", "3mo"
+]
 
-# -------------------------------
-# Fetch Yahoo Data (Stocks, Forex)
-# -------------------------------
-def fetch_yahoo_data(symbol, market, interval="1m", limit=200):
-    yf_symbol = symbol
+def load_symbols():
+    """Load symbols.json file"""
+    with open(SYMBOLS_FILE, "r") as f:
+        return json.load(f)
+
+def save_symbols(data):
+    """Save back to symbols.json file"""
+    with open(SYMBOLS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def map_symbol(symbol, market):
+    """Map user symbol to Yahoo Finance ticker"""
     if market == "crypto":
-        yf_symbol = symbol.replace("USDT", "-USD")  # BTCUSDT -> BTC-USD
+        return symbol.replace("USDT", "-USD")
     elif market == "forex":
-        yf_symbol = symbol + "=X"  # EURUSD -> EURUSD=X
+        return symbol + "=X"
+    else:
+        return symbol  # stocks already valid e.g. RELIANCE.NS
 
-    for attempt in range(3):
-        try:
-            df = yf.download(
-                tickers=yf_symbol,
-                period="5d",
-                interval=interval,
-                progress=False,
-                auto_adjust=False,
-            )
-            if not df.empty and "Open" in df.columns:
-                df = df.reset_index()
-                return df
-        except Exception as e:
-            print(f"⚠️ Failed Yahoo fetch {yf_symbol} attempt {attempt+1}: {e}")
-            time.sleep(2)
+def fetch_data(symbol, market, interval="1h", period="5d"):
+    """Download data from Yahoo Finance"""
+    yf_symbol = map_symbol(symbol, market)
+    try:
+        df = yf.download(
+            tickers=yf_symbol,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False
+        )
+        if df.empty:
+            raise RuntimeError(f"No data for {symbol} ({interval})")
+        return df
+    except Exception as e:
+        print(f"❌ Failed to get {symbol} ({interval}): {e}")
+        return None
 
-    raise RuntimeError(f"Missing expected data for {yf_symbol}")
+def process_symbol(symbol_obj):
+    """Process each symbol across all available valid timeframes"""
+    symbol = symbol_obj["symbol"]
+    market = symbol_obj.get("market", "stock")
+    intervals = symbol_obj.get("timeframes") or [symbol_obj.get("interval", "1h")]
 
-# -------------------------------
-# Fetch Crypto Data (Binance via CCXT)
-# -------------------------------
-def fetch_binance_data(symbol, interval="1m", limit=200):
-    exchange = ccxt.binance()
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=interval, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    return df
-
-# -------------------------------
-# Detect Timeframes for a Symbol
-# -------------------------------
-def detect_timeframes(symbol, market):
-    """
-    Try fetching data on different intervals.
-    Return only those that work.
-    """
-    test_intervals = ["1m", "5m", "15m", "1h", "4h", "1d", "1wk", "1mo"]
-    valid = []
-
-    for tf in test_intervals:
-        try:
-            if market == "crypto":
-                df = fetch_binance_data(symbol, interval=tf, limit=10)
-            else:
-                df = fetch_yahoo_data(symbol, market, interval=tf, limit=10)
-            if not df.empty:
-                valid.append(tf)
-        except Exception as e:
-            print(f"Skipping {symbol} {tf}: {e}")
+    print(f"\n=== Processing {symbol} ({market}) ===")
+    for interval in intervals:
+        if interval not in VALID_INTERVALS:
+            print(f"⚠ Skipping unsupported interval '{interval}' for {symbol}")
             continue
 
-    return valid
+        df = fetch_data(symbol, market, interval=interval, period="5d")
+        if df is None:
+            continue
 
-# -------------------------------
-# Update cached timeframes in symbols.json
-# -------------------------------
-def update_symbol_timeframes(symbol, market, timeframes):
-    for s in SYMBOLS:
-        if s["symbol"] == symbol and s.get("market") == market:
-            s["timeframes"] = timeframes
-    with open("symbols.json", "w") as f:
-        json.dump({"symbols": SYMBOLS}, f, indent=2)
+        print(f"✔ {symbol} [{interval}] data points: {len(df)}")
+        # 🔹 Insert your indicator/signal logic here
 
-# -------------------------------
-# API Endpoint: Timeframes
-# -------------------------------
-@app.route("/timeframes", methods=["GET"])
-def timeframes():
-    symbol = request.args.get("symbol", "").strip()
-    if not symbol:
-        return jsonify({"error": "symbol required (e.g. BTCUSDT or RELIANCE.NS)"}), 400
+def run():
+    symbols = load_symbols()
+    print("Loaded symbols:", symbols)
 
-    market = request.args.get("market", "").strip().lower()
-    refresh = request.args.get("refresh", "false").lower() == "true"
+    for symbol_obj in symbols:
+        try:
+            process_symbol(symbol_obj)
+        except Exception as e:
+            print(f"Error processing {symbol_obj['symbol']}: {e}")
 
-    if not market:
-        # auto-detect from symbols.json
-        for s in SYMBOLS:
-            if s["symbol"] == symbol:
-                market = s.get("market", "crypto")
-
-    # If cached & refresh not requested → use directly
-    for s in SYMBOLS:
-        if s["symbol"] == symbol and s.get("market") == market and "timeframes" in s and not refresh:
-            return jsonify({
-                "symbol": symbol,
-                "market": market,
-                "timeframes": s["timeframes"],
-                "cached": True
-            })
-
-    # Else detect + cache
-    valid_timeframes = detect_timeframes(symbol, market)
-    if valid_timeframes:
-        update_symbol_timeframes(symbol, market, valid_timeframes)
-
-    return jsonify({
-        "symbol": symbol,
-        "market": market,
-        "timeframes": valid_timeframes,
-        "cached": False if refresh else "updated"
-    })
-
-# -------------------------------
-# Process Symbol (basic runner)
-# -------------------------------
-def process_symbol(symbol_data):
-    symbol = symbol_data["symbol"]
-    market = symbol_data.get("market", "crypto")
-    interval = symbol_data.get("interval", "1m")
-
-    print(f"Processing {symbol}...")
-
-    try:
-        if market == "crypto":
-            df = fetch_binance_data(symbol, interval=interval)
-        else:
-            df = fetch_yahoo_data(symbol, market, interval=interval)
-        print(f"✅ Got {len(df)} candles for {symbol} on {interval}")
-    except Exception as e:
-        print(f"❌ Error processing {symbol}: {e}")
-
-# -------------------------------
-# Main Runner
-# -------------------------------
 if __name__ == "__main__":
-    print("Loaded symbols:", SYMBOLS)
-    for sym in SYMBOLS:
-        process_symbol(sym)
-    app.run(host="0.0.0.0", port=5000)
+    while True:
+        run()
+        print(f"Cycle completed @ {datetime.utcnow()}")
+        time.sleep(60)  # wait 1 minute before next cycle
