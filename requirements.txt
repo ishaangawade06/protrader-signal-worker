@@ -4,3 +4,7 @@ pandas
 numpy
 scikit-learn
 requests
+firebase-admin
+gunicorn
+ccxt
+python-dateutil
