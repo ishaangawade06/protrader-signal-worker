@@ -1,0 +1,8 @@
+app = "ProTraderHack"
+
+[build]
+  # Fly will build from Dockerfile by default if Dockerfile exists.
+
+[env]
+  # optional runtime env defaults
+  PORT = "8080"
