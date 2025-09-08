@@ -31,10 +31,12 @@ jobs:
           # show first 2 lines to verify (not sensitive)
           head -n 2 serviceAccount.json
 
-      - name: Run signal worker
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
-          FCM_TOPIC: ${{ secrets.FCM_TOPIC }}
-        run: |
-          python main.py
+- name: Run signal worker
+  env:
+    FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+    ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
+    FCM_TOPIC: ${{ secrets.FCM_TOPIC }}
+    BACKEND_URL: ${{ secrets.BACKEND_URL }}
+    PROTRADER_APP_KEY: ${{ secrets.PROTRADER_APP_KEY }}
+  run: |
+    python worker.py
