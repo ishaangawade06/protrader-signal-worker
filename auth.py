@@ -56,3 +56,15 @@ def validate_key(key: str):
         else:
             return {"valid": True, "role": info["role"], "days": info["expires"]}
     return {"valid": False}
+
+
+def list_keys():
+    """Return all keys from Firestore (and default fallback if Firestore is empty)."""
+    docs = db.collection("keys").stream()
+    keys = {}
+    for doc in docs:
+        keys[doc.id] = doc.to_dict()
+
+    if not keys:
+        keys = DEFAULT_KEYS
+    return keys
