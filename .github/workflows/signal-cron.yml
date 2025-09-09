@@ -2,21 +2,21 @@ name: ProTrader Signal Worker
 
 on:
   schedule:
-    # runs every 5 minutes
-    - cron: "*/5 * * * *"
-  workflow_dispatch: {}  # allows manual run
+    - cron: "*/5 * * * *"   # Runs every 5 minutes
+  workflow_dispatch:        # Allow manual trigger
 
 jobs:
   run-worker:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5   # updated to v5 for latest fixes
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -25,7 +25,6 @@ jobs:
 
       - name: Run worker
         env:
-          BACKEND_URL: "https://protraderhack.onrender.com"
-          PROTRADER_APP_KEY: "ishaan"
-        run: |
-          python worker.py
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          PROTRADER_APP_KEY: ${{ secrets.PROTRADER_APP_KEY }}
+        run: python worker.py
