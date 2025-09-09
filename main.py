@@ -30,7 +30,14 @@ def require_key(owner=False):
 def safe_yf_download(symbol, interval="5m", period="7d"):
     for attempt in range(3):
         try:
-            df = yf.download(tickers=symbol, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
+            df = yf.download(
+                tickers=symbol,
+                period=period,
+                interval=interval,
+                progress=False,
+                threads=False,
+                auto_adjust=False
+            )
             if df is None or df.empty:
                 time.sleep(1 + attempt)
                 continue
@@ -75,17 +82,15 @@ def cache_expired(ts):
 # ---------- Endpoints ----------
 @app.route("/symbols", methods=["GET"])
 def api_symbols():
-    # require key for access to symbols
     res, err = require_key()
     if err: return err
 
-    # Try Firestore collection 'symbols' (documents with fields: symbol, market, interval, risk_percent, enabled)
+    # Try Firestore collection 'symbols'
     try:
         docs = db.collection("symbols").where("enabled", "==", True).stream()
         syms = []
         for d in docs:
             data = d.to_dict()
-            # normalize fields
             data['symbol'] = data.get('symbol') or d.id
             data['market'] = data.get('market', 'crypto')
             data['interval'] = data.get('interval', '1m')
@@ -145,29 +150,75 @@ def api_history():
 
 @app.route("/signal", methods=["GET"])
 def api_signal():
-    res, err = require_key()
+    user, err = require_key()
     if err: return err
+
     symbol = request.args.get("symbol", "").strip()
     interval = request.args.get("interval", "5m").strip()
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
+
     df = safe_yf_download(symbol, interval=interval, period="7d")
     if df.empty:
-        return jsonify({"symbol": symbol, "interval": interval, "signal": "HOLD", "reasons": ["no_data"], "confidence": 0.0})
-    try:
-        out = hybrid_signal(df)
-        res = {
+        result = {
             "symbol": symbol,
             "interval": interval,
-            "signal": out.get("signal", "HOLD"),
-            "reasons": out.get("reasons", []),
-            "confidence": float(out.get("confidence", 0.0)),
+            "signal": "HOLD",
+            "reasons": ["no_data"],
+            "confidence": 0.0,
             "timestamp": datetime.utcnow().isoformat()
         }
-        return jsonify(res)
+    else:
+        try:
+            out = hybrid_signal(df)
+            result = {
+                "symbol": symbol,
+                "interval": interval,
+                "signal": out.get("signal", "HOLD"),
+                "reasons": out.get("reasons", []),
+                "confidence": float(out.get("confidence", 0.0)),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            traceback.print_exc()
+            result = {
+                "symbol": symbol,
+                "interval": interval,
+                "signal": "HOLD",
+                "reasons": ["engine_error"],
+                "confidence": 0.0,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    # Store in Firestore
+    try:
+        db.collection("signals").add(result)
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"symbol": symbol, "interval": interval, "signal": "HOLD", "reasons": ["engine_error"], "confidence": 0.0})
+        print("Firestore write failed:", e)
+
+    return jsonify(result)
+
+@app.route("/signals/history", methods=["GET"])
+def api_signals_history():
+    res, err = require_key()
+    if err: return err
+
+    symbol = request.args.get("symbol")
+    interval = request.args.get("interval")
+    limit = int(request.args.get("limit", "50"))
+
+    try:
+        query = db.collection("signals").order_by("timestamp", direction="DESCENDING")
+        if symbol:
+            query = query.where("symbol", "==", symbol)
+        if interval:
+            query = query.where("interval", "==", interval)
+        docs = query.limit(limit).stream()
+        signals = [d.to_dict() for d in docs]
+        return jsonify({"signals": signals})
+    except Exception as e:
+        print("Firestore history fetch error:", e)
+        return jsonify({"signals": []})
 
 @app.route("/position-size", methods=["GET"])
 def api_position_size():
