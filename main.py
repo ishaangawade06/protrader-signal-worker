@@ -1,11 +1,12 @@
 # main.py
 import os, json, time
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 import pandas as pd
 import yfinance as yf
 
 from signals import hybrid_signal  # from signals.py
+from auth import check_key         # from auth.py
 
 APP_PORT = int(os.environ.get("PORT", 5000))
 SYMBOLS_FILE = "symbols.json"
@@ -27,10 +28,8 @@ def safe_yf_download(symbol, interval="5m", period="7d"):
         try:
             df = yf.download(tickers=symbol, period=period, interval=interval, progress=False, threads=False)
             if df is None or df.empty:
-                # small backoff and retry
                 time.sleep(1 + attempt)
                 continue
-            # flatten columns
             if isinstance(df.columns, pd.MultiIndex):
                 cols = []
                 for c in df.columns:
@@ -43,10 +42,8 @@ def safe_yf_download(symbol, interval="5m", period="7d"):
                 df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
             return df
         except Exception as e:
-            # don't throw — log and try again
             print(f"[yfinance] attempt {attempt+1} failed for {symbol} {interval}: {e}")
             time.sleep(1 + attempt)
-    # final: return empty dataframe
     return pd.DataFrame()
 
 def load_cache():
@@ -71,6 +68,18 @@ def cache_expired(ts):
     except Exception:
         return True
 
+# ---------- Auth Middleware ----------
+@app.before_request
+def authenticate():
+    protected = ["api_signal", "api_symbols", "api_timeframes", "api_history", "api_position_size"]
+    if request.endpoint in protected:
+        key = request.headers.get("X-API-KEY", "").strip()
+        valid, role, exp = check_key(key)
+        if not valid:
+            return jsonify({"error": "invalid or expired key"}), 403
+        g.role = role
+        g.expires = exp
+
 # ---------- Endpoints ----------
 @app.route("/symbols", methods=["GET"])
 def api_symbols():
@@ -79,7 +88,6 @@ def api_symbols():
 
 @app.route("/timeframes", methods=["GET"])
 def api_timeframes():
-    # Query params: symbol (yf format), refresh (true/false)
     symbol = request.args.get("symbol", "").strip()
     if not symbol:
         return jsonify({"error": "symbol param required (e.g. BTC-USD)"}), 400
@@ -103,7 +111,6 @@ def api_timeframes():
 
 @app.route("/history", methods=["GET"])
 def api_history():
-    # params: symbol, interval, limit
     symbol = request.args.get("symbol", "").strip()
     interval = request.args.get("interval", "5m").strip()
     limit = int(request.args.get("limit", "500"))
@@ -112,13 +119,11 @@ def api_history():
     df = safe_yf_download(symbol, interval=interval, period="30d")
     if df.empty:
         return jsonify({"error": "no data"}), 404
-    # limit and return JSON records
     df = df.tail(limit).reset_index()
     return df.to_json(orient="records")
 
 @app.route("/signal", methods=["GET"])
 def api_signal():
-    # params: symbol, interval
     symbol = request.args.get("symbol", "").strip()
     interval = request.args.get("interval", "5m").strip()
     if not symbol:
@@ -128,10 +133,8 @@ def api_signal():
     if df.empty:
         return jsonify({"symbol": symbol, "interval": interval, "signal": "HOLD", "reasons": ["no_data"], "confidence": 0.0})
 
-    # produce hybrid signal using signals.hybrid_signal
     try:
         out = hybrid_signal(df)
-        # ensure fields
         res = {
             "symbol": symbol,
             "interval": interval,
@@ -147,7 +150,6 @@ def api_signal():
 
 @app.route("/position-size", methods=["GET"])
 def api_position_size():
-    # balance, risk_percent, entry, stop
     try:
         balance = float(request.args.get("balance", "0"))
         risk = float(request.args.get("risk_percent", "1"))
@@ -164,5 +166,5 @@ def api_position_size():
 
 # ---------- Run ----------
 if __name__ == "__main__":
-    print("Starting ProTraderHack backend (final).")
+    print("Starting ProTraderHack backend (with auth).")
     app.run(host="0.0.0.0", port=APP_PORT)
