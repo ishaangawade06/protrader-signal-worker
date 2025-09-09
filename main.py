@@ -1,12 +1,12 @@
 # main.py
-import os, json, time
+import os, json, time, traceback
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import pandas as pd
 import yfinance as yf
 
-from signals import hybrid_signal  # from signals.py
-from auth import validate_key      # from auth.py
+from auth import validate_key, db  # auth.py provides db and validate_key
+from signals import hybrid_signal   # your signal engine (existing)
 
 APP_PORT = int(os.environ.get("PORT", 5000))
 SYMBOLS_FILE = "symbols.json"
@@ -18,17 +18,23 @@ os.makedirs("output", exist_ok=True)
 app = Flask(__name__)
 
 # ---------- Helpers ----------
-def load_symbols():
-    with open(SYMBOLS_FILE, "r") as f:
-        return json.load(f)
+def require_key(owner=False):
+    key = request.headers.get("X-APP-KEY", "").strip()
+    res = validate_key(key)
+    if not res.get("valid"):
+        return None, (jsonify({"error":"invalid_or_expired_key"}), 403)
+    if owner and res.get("role") != "owner":
+        return None, (jsonify({"error":"owner_access_required"}), 403)
+    return res, None
 
 def safe_yf_download(symbol, interval="5m", period="7d"):
     for attempt in range(3):
         try:
-            df = yf.download(tickers=symbol, period=period, interval=interval, progress=False, threads=False)
+            df = yf.download(tickers=symbol, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
             if df is None or df.empty:
                 time.sleep(1 + attempt)
                 continue
+            # flatten columns (multiindex sometimes returned)
             if isinstance(df.columns, pd.MultiIndex):
                 cols = []
                 for c in df.columns:
@@ -59,49 +65,59 @@ def save_cache(cache):
         json.dump(cache, f, indent=2)
 
 def cache_expired(ts):
-    if not ts:
-        return True
+    if not ts: return True
     try:
         last = datetime.fromisoformat(ts)
         return (datetime.utcnow() - last) > timedelta(days=CACHE_TTL_DAYS)
     except Exception:
         return True
 
-# ---------- Middleware ----------
-def require_key(owner=False):
-    """Check API key before allowing access"""
-    key = request.headers.get("X-APP-KEY", "").strip()
-    res = validate_key(key)
-    if not res["valid"]:
-        return None, jsonify({"error": "invalid_or_expired_key"}), 403
-    if owner and res["role"] != "owner":
-        return None, jsonify({"error": "owner_access_required"}), 403
-    return res, None, None
-
 # ---------- Endpoints ----------
 @app.route("/symbols", methods=["GET"])
 def api_symbols():
-    _, err, code = require_key()
-    if err: return err, code
-    data = load_symbols()
-    return jsonify(data)
+    # require key for access to symbols
+    res, err = require_key()
+    if err: return err
+
+    # Try Firestore collection 'symbols' (documents with fields: symbol, market, interval, risk_percent, enabled)
+    try:
+        docs = db.collection("symbols").where("enabled", "==", True).stream()
+        syms = []
+        for d in docs:
+            data = d.to_dict()
+            # normalize fields
+            data['symbol'] = data.get('symbol') or d.id
+            data['market'] = data.get('market', 'crypto')
+            data['interval'] = data.get('interval', '1m')
+            data['risk_percent'] = float(data.get('risk_percent', 2.0))
+            syms.append(data)
+        if syms:
+            return jsonify({"symbols": syms})
+    except Exception as e:
+        print("Firestore /symbols read error:", e)
+
+    # Fallback: local symbols.json
+    try:
+        with open(SYMBOLS_FILE, "r") as f:
+            j = json.load(f)
+            return jsonify(j)
+    except Exception as e:
+        print("Fallback symbols.json missing or invalid:", e)
+        return jsonify({"symbols": []})
 
 @app.route("/timeframes", methods=["GET"])
 def api_timeframes():
-    _, err, code = require_key()
-    if err: return err, code
-
+    res, err = require_key()
+    if err: return err
     symbol = request.args.get("symbol", "").strip()
     if not symbol:
-        return jsonify({"error": "symbol param required"}), 400
+        return jsonify({"error": "symbol param required (e.g. BTC-USD)"}), 400
     refresh = request.args.get("refresh", "false").lower() == "true"
-
     cache = load_cache()
     key = symbol
     if not refresh and key in cache.get("data", {}) and not cache_expired(cache.get("updated")):
         return jsonify({"symbol": symbol, "timeframes": cache["data"][key], "cached": True})
-
-    candidate_intervals = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"]
+    candidate_intervals = ["1m","2m","5m","15m","30m","1h","1d","1wk","1mo"]
     valid = []
     for tf in candidate_intervals:
         df = safe_yf_download(symbol, interval=tf, period="7d")
@@ -114,9 +130,8 @@ def api_timeframes():
 
 @app.route("/history", methods=["GET"])
 def api_history():
-    _, err, code = require_key()
-    if err: return err, code
-
+    res, err = require_key()
+    if err: return err
     symbol = request.args.get("symbol", "").strip()
     interval = request.args.get("interval", "5m").strip()
     limit = int(request.args.get("limit", "500"))
@@ -130,18 +145,15 @@ def api_history():
 
 @app.route("/signal", methods=["GET"])
 def api_signal():
-    _, err, code = require_key()
-    if err: return err, code
-
+    res, err = require_key()
+    if err: return err
     symbol = request.args.get("symbol", "").strip()
     interval = request.args.get("interval", "5m").strip()
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
-
     df = safe_yf_download(symbol, interval=interval, period="7d")
     if df.empty:
         return jsonify({"symbol": symbol, "interval": interval, "signal": "HOLD", "reasons": ["no_data"], "confidence": 0.0})
-
     try:
         out = hybrid_signal(df)
         res = {
@@ -154,14 +166,13 @@ def api_signal():
         }
         return jsonify(res)
     except Exception as e:
-        print("Signal engine error:", e)
+        traceback.print_exc()
         return jsonify({"symbol": symbol, "interval": interval, "signal": "HOLD", "reasons": ["engine_error"], "confidence": 0.0})
 
 @app.route("/position-size", methods=["GET"])
 def api_position_size():
-    _, err, code = require_key()
-    if err: return err, code
-
+    res, err = require_key()
+    if err: return err
     try:
         balance = float(request.args.get("balance", "0"))
         risk = float(request.args.get("risk_percent", "1"))
@@ -176,22 +187,20 @@ def api_position_size():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-# ---------- Owner Endpoints ----------
+# Owner endpoint (example)
 @app.route("/owner/add-key", methods=["POST"])
 def owner_add_key():
-    _, err, code = require_key(owner=True)
-    if err: return err, code
-    from auth import save_key_to_db
+    res, err = require_key(owner=True)
+    if err: return err
     body = request.get_json(force=True)
     key = body.get("key")
     role = body.get("role", "user")
-    days = body.get("days")
+    days = body.get("days", None)
+    from auth import save_key_to_db
     save_key_to_db(key, role, days)
     return jsonify({"ok": True, "key": key})
 
-@app.route("/owner/list-keys", methods=["GET"])
-def owner_list_keys():
-    _, err, code = require_key(owner=True)
-    if err: return err, code
-    from auth import list_keys
-    return jsonify({"keys": list_keys()})
+# ---------- Run ----------
+if __name__ == "__main__":
+    print("Starting ProTraderHack backend.")
+    app.run(host="0.0.0.0", port=APP_PORT)
