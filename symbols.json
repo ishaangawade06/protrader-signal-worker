@@ -1,19 +1,19 @@
 {
   "crypto": [
-    {"symbol": "BTC-USD", "name": "Bitcoin"},
-    {"symbol": "ETH-USD", "name": "Ethereum"}
+    {"symbol": "BTC-USD", "name": "Bitcoin", "intervals": ["1m", "5m", "15m", "1h"]},
+    {"symbol": "ETH-USD", "name": "Ethereum", "intervals": ["5m", "15m", "1h"]}
   ],
   "stocks": [
-    {"symbol": "RELIANCE.NS", "name": "Reliance Industries"},
-    {"symbol": "TCS.NS", "name": "Tata Consultancy Services"},
-    {"symbol": "INFY.NS", "name": "Infosys Ltd"},
-    {"symbol": "AAPL", "name": "Apple Inc."},
-    {"symbol": "TSLA", "name": "Tesla Inc."}
+    {"symbol": "RELIANCE.NS", "name": "Reliance Industries", "intervals": ["15m", "1h", "1d"]},
+    {"symbol": "TCS.NS", "name": "Tata Consultancy Services", "intervals": ["15m", "1h", "1d"]},
+    {"symbol": "INFY.NS", "name": "Infosys Ltd", "intervals": ["15m", "1h", "1d"]},
+    {"symbol": "AAPL", "name": "Apple Inc.", "intervals": ["1h", "1d"]},
+    {"symbol": "TSLA", "name": "Tesla Inc.", "intervals": ["15m", "1h", "1d"]}
   ],
   "forex": [
-    {"symbol": "EURUSD=X", "name": "EUR / USD"},
-    {"symbol": "GBPUSD=X", "name": "GBP / USD"},
-    {"symbol": "USDJPY=X", "name": "USD / JPY"},
-    {"symbol": "XAUUSD=X", "name": "Gold / USD"}
+    {"symbol": "EURUSD=X", "name": "EUR / USD", "intervals": ["1h", "1d"]},
+    {"symbol": "GBPUSD=X", "name": "GBP / USD", "intervals": ["1h", "1d"]},
+    {"symbol": "USDJPY=X", "name": "USD / JPY", "intervals": ["1h", "1d"]},
+    {"symbol": "XAUUSD=X", "name": "Gold / USD", "intervals": ["15m", "1h", "4h", "1d"]}
   ]
 }
