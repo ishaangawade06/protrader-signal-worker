@@ -4,27 +4,24 @@ import os, time, json, requests, traceback
 BACKEND_URL = os.environ.get("BACKEND_URL", "").rstrip("/")  # e.g. https://protraderhack.onrender.com
 APP_KEY = os.environ.get("PROTRADER_APP_KEY", "ishaan")
 
+# Default intervals for every symbol
+DEFAULT_INTERVALS = ["1m", "5m", "15m", "1h", "1d"]
+
 def load_symbols():
     try:
         with open("symbols.json","r") as f:
             j = json.load(f)
-
-        # If grouped (crypto/stocks/forex), flatten into one list
+        # flatten into one list (crypto + stocks + forex)
         symbols = []
-        for group in j.values():
-            if isinstance(group, list):
-                for s in group:
-                    if isinstance(s, dict):
-                        symbols.append(s)
+        for cat, arr in j.items():
+            for s in arr:
+                symbols.append(s)
         return symbols
-
     except Exception as e:
         print("Error loading symbols.json:", e)
         return []
 
-def trigger_symbol(sym):
-    symbol = sym.get("symbol")
-    interval = sym.get("interval", "1m")  # default 1m if not provided
+def trigger_symbol(symbol, interval):
     try:
         params = {"symbol": symbol, "interval": interval}
         url = f"{BACKEND_URL}/signal"
@@ -45,8 +42,10 @@ def main():
         return
 
     for s in syms:
-        trigger_symbol(s)
-        time.sleep(1)  # small delay
+        symbol = s.get("symbol")
+        for interval in DEFAULT_INTERVALS:
+            trigger_symbol(symbol, interval)
+            time.sleep(1)  # small delay between requests
 
     print("Worker finished run successfully ✅")
 
