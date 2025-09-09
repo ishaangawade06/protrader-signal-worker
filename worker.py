@@ -1,12 +1,13 @@
 # worker.py
 import os, time, json, requests, traceback
 
-BACKEND_URL = os.environ.get("BACKEND_URL", "").rstrip("/")  # e.g. https://your-app.onrender.com
+# Fixed backend URL for Render deployment
+BACKEND_URL = "https://protraderhack.onrender.com"
 APP_KEY = os.environ.get("PROTRADER_APP_KEY", "ishaan")
 
 def load_symbols():
     try:
-        with open("symbols.json","r") as f:
+        with open("symbols.json", "r") as f:
             j = json.load(f)
         return j.get("symbols", [])
     except Exception as e:
@@ -26,8 +27,6 @@ def trigger_symbol(sym):
         traceback.print_exc()
 
 def main():
-    if not BACKEND_URL:
-        raise RuntimeError("BACKEND_URL not set")
     print("Worker started. Backend:", BACKEND_URL)
 
     syms = load_symbols()
@@ -37,7 +36,7 @@ def main():
 
     for s in syms:
         trigger_symbol(s)
-        time.sleep(1)  # small delay
+        time.sleep(1)  # small delay between requests
 
     print("Worker finished run successfully ✅")
 
