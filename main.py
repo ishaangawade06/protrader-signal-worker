@@ -189,7 +189,9 @@ def owner_add_key():
     save_key_to_db(key, role, days)
     return jsonify({"ok": True, "key": key})
 
-# ---------- Run ----------
-if __name__ == "__main__":
-    print("Starting ProTraderHack backend (with auth).")
-    app.run(host="0.0.0.0", port=APP_PORT)
+@app.route("/owner/list-keys", methods=["GET"])
+def owner_list_keys():
+    _, err, code = require_key(owner=True)
+    if err: return err, code
+    from auth import list_keys
+    return jsonify({"keys": list_keys()})
