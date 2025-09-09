@@ -2,7 +2,7 @@ name: ProTrader Signal Worker
 
 on:
   schedule:
-    # runs at every 5 minutes
+    # runs every 5 minutes
     - cron: "*/5 * * * *"
   workflow_dispatch: {}  # allows manual run
 
@@ -23,20 +23,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Write Firebase service account
+      - name: Run worker
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          BACKEND_URL: "https://protraderhack.onrender.com"
+          PROTRADER_APP_KEY: "ishaan"
         run: |
-          echo "$FIREBASE_SERVICE_ACCOUNT" > serviceAccount.json
-          # show first 2 lines to verify (not sensitive)
-          head -n 2 serviceAccount.json
-
-- name: Run signal worker
-  env:
-    BACKEND_URL: ${{ secrets.BACKEND_URL }}
-    PROTRADER_APP_KEY: ${{ secrets.PROTRADER_APP_KEY }}
-    FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-    ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
-    FCM_TOPIC: ${{ secrets.FCM_TOPIC }}
-  run: |
-    python worker.py
+          python worker.py
