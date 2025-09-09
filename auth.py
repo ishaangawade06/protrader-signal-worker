@@ -1,48 +1,46 @@
-import json, os, time
+# auth.py
+import os
+from datetime import datetime, timedelta
 
-KEYS_FILE = "keys.json"
-
-# --- Predefined default keys ---
+# --- Hardcoded keys ---
+OWNER_KEYS = ["vamya", "pthowner16"]   # never expire
 DEFAULT_KEYS = {
-    "owner": {
-        "vamya": {"type": "owner", "expires": 0},
-        "pthowner16": {"type": "owner", "expires": 0},
-    },
-    "standard": {
-        "pth7": {"type": "user", "expires": 7},      # 7 days
-        "key15": {"type": "user", "expires": 15},    # 15 days
-        "ishaan30": {"type": "user", "expires": 30}, # 30 days
-        "ishaan": {"type": "user", "expires": 0},    # lifetime
-    }
+    "pth7": 7,        # 7 days
+    "key15": 15,      # 15 days
+    "ishaan30": 30,   # 30 days
+    "ishaan": 99999,  # lifetime (effectively never expires)
 }
 
-def load_keys():
-    if os.path.exists(KEYS_FILE):
-        with open(KEYS_FILE, "r") as f:
-            return json.load(f)
-    return DEFAULT_KEYS
+# Memory store for issued key expiries
+ISSUED = {}  # key -> expiry datetime
 
-def save_keys(data):
-    with open(KEYS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def check_key(key: str):
+    """
+    Validate API key.
+    Returns (valid: bool, role: str, expires: datetime|None)
+    """
+    if not key:
+        return False, None, None
 
-def validate_key(key: str) -> bool:
-    """Check if key exists and not expired"""
-    keys = load_keys()
-    for section in keys.values():
-        if key in section:
-            expires = section[key]["expires"]
-            if expires == 0:
-                return True  # lifetime or owner
-            created = section[key].get("created", int(time.time()))
-            if time.time() < created + expires * 86400:
-                return True
-    return False
+    # 1. Owners (super admin)
+    if key in OWNER_KEYS:
+        return True, "owner", None
 
-def is_owner(key: str) -> bool:
-    keys = load_keys()
-    return key in keys.get("owner", {})
+    # 2. Default keys (timed)
+    if key in DEFAULT_KEYS:
+        if key not in ISSUED:
+            days = DEFAULT_KEYS[key]
+            if days >= 99999:
+                exp = None  # lifetime
+            else:
+                exp = datetime.utcnow() + timedelta(days=days)
+            ISSUED[key] = exp
+        exp = ISSUED[key]
+        if exp is None or exp > datetime.utcnow():
+            return True, "user", exp
+        return False, None, None
 
-# Create file if not exists
-if not os.path.exists(KEYS_FILE):
-    save_keys(DEFAULT_KEYS)
+    # 3. TODO: Firestore dynamic keys
+    # If you want, here we can connect to Firestore to fetch keys created by owner.
+
+    return False, None, None
