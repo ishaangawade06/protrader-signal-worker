@@ -1,13 +1,27 @@
-# auth.py
-import hashlib
+import os, json, hashlib
 from datetime import datetime, timedelta
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# ---------- Firestore Init ----------
+db = None
+try:
+    if not firebase_admin._apps:
+        # Load service account from Render secret
+        service_account_info = json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])
+        cred = credentials.Certificate(service_account_info)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("✅ Firestore connected successfully")
+except Exception as e:
+    print("❌ Firestore init failed:", e)
 
 # ---------- Hash Helper ----------
 def hash_key(k: str) -> str:
     return hashlib.sha256(k.encode()).hexdigest()
 
 # ---------- Save Key ----------
-def save_key_to_db(key: str, role: str = "user", days: int = None, db=None):
+def save_key_to_db(key: str, role: str = "user", days: int = None, db=db):
     """
     Save API key to Firestore.
     - key: API key (string)
@@ -31,7 +45,7 @@ def save_key_to_db(key: str, role: str = "user", days: int = None, db=None):
     print(f"✅ Key saved: {key} ({role}, expiry={expiry})")
 
 # ---------- Validate Key ----------
-def validate_key(key: str, db=None):
+def validate_key(key: str, db=db):
     """
     Validate API key against Firestore.
     Returns dict: {valid, role, expiry}
