@@ -5,7 +5,10 @@ from flask import Flask, request, jsonify
 import pandas as pd
 import yfinance as yf
 
-from auth import validate_key, db  # auth.py provides db and validate_key
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+from auth import validate_key  # we no longer import db from auth
 from signals import hybrid_signal   # your signal engine (existing)
 
 APP_PORT = int(os.environ.get("PORT", 5000))
@@ -17,14 +20,28 @@ os.makedirs("output", exist_ok=True)
 
 app = Flask(__name__)
 
+# ---------- Firebase Setup ----------
+try:
+    firebase_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+    if not firebase_json:
+        raise RuntimeError("FIREBASE_SERVICE_ACCOUNT not set in secrets!")
+
+    cred = credentials.Certificate(json.loads(firebase_json))
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("✅ Firebase connected successfully.")
+except Exception as e:
+    print("❌ Firebase init failed:", e)
+    db = None
+
 # ---------- Helpers ----------
 def require_key(owner=False):
     key = request.headers.get("X-APP-KEY", "").strip()
-    res = validate_key(key)
+    res = validate_key(key, db)  # pass db into validate_key
     if not res.get("valid"):
-        return None, (jsonify({"error": "invalid_or_expired_key"}), 403)
+        return None, (jsonify({"error":"invalid_or_expired_key"}), 403)
     if owner and res.get("role") != "owner":
-        return None, (jsonify({"error": "owner_access_required"}), 403)
+        return None, (jsonify({"error":"owner_access_required"}), 403)
     return res, None
 
 def safe_yf_download(symbol, interval="5m", period="7d"):
@@ -64,16 +81,15 @@ def load_cache():
             with open(CACHE_FILE, "r") as f:
                 return json.load(f)
         except Exception:
-            return {"data": {}}
-    return {"data": {}}
+            return {"updated": None, "data": {}}
+    return {"updated": None, "data": {}}
 
 def save_cache(cache):
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
 
 def cache_expired(ts):
-    if not ts:
-        return True
+    if not ts: return True
     try:
         last = datetime.fromisoformat(ts)
         return (datetime.utcnow() - last) > timedelta(days=CACHE_TTL_DAYS)
@@ -86,21 +102,21 @@ def api_symbols():
     res, err = require_key()
     if err: return err
 
-    # Try Firestore collection 'symbols'
-    try:
-        docs = db.collection("symbols").where("enabled", "==", True).stream()
-        syms = []
-        for d in docs:
-            data = d.to_dict()
-            data['symbol'] = data.get('symbol') or d.id
-            data['market'] = data.get('market', 'crypto')
-            data['interval'] = data.get('interval', '1m')
-            data['risk_percent'] = float(data.get('risk_percent', 2.0))
-            syms.append(data)
-        if syms:
-            return jsonify({"symbols": syms})
-    except Exception as e:
-        print("Firestore /symbols read error:", e)
+    if db:
+        try:
+            docs = db.collection("symbols").where("enabled", "==", True).stream()
+            syms = []
+            for d in docs:
+                data = d.to_dict()
+                data['symbol'] = data.get('symbol') or d.id
+                data['market'] = data.get('market', 'crypto')
+                data['interval'] = data.get('interval', '1m')
+                data['risk_percent'] = float(data.get('risk_percent', 2.0))
+                syms.append(data)
+            if syms:
+                return jsonify({"symbols": syms})
+        except Exception as e:
+            print("Firestore /symbols read error:", e)
 
     # Fallback: local symbols.json
     try:
@@ -119,29 +135,18 @@ def api_timeframes():
     if not symbol:
         return jsonify({"error": "symbol param required (e.g. BTC-USD)"}), 400
     refresh = request.args.get("refresh", "false").lower() == "true"
-
     cache = load_cache()
-    sym_cache = cache.get("data", {}).get(symbol, {})
-    last_updated = sym_cache.get("updated")
-
-    if not refresh and sym_cache.get("timeframes") and not cache_expired(last_updated):
-        return jsonify({
-            "symbol": symbol,
-            "timeframes": sym_cache["timeframes"],
-            "cached": True
-        })
-
-    candidate_intervals = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"]
+    key = symbol
+    if not refresh and key in cache.get("data", {}) and not cache_expired(cache.get("updated")):
+        return jsonify({"symbol": symbol, "timeframes": cache["data"][key], "cached": True})
+    candidate_intervals = ["1m","2m","5m","15m","30m","1h","1d","1wk","1mo"]
     valid = []
     for tf in candidate_intervals:
         df = safe_yf_download(symbol, interval=tf, period="7d")
         if not df.empty:
             valid.append(tf)
-
-    cache.setdefault("data", {})[symbol] = {
-        "timeframes": valid,
-        "updated": datetime.utcnow().isoformat()
-    }
+    cache.setdefault("data", {})[key] = valid
+    cache["updated"] = datetime.utcnow().isoformat()
     save_cache(cache)
     return jsonify({"symbol": symbol, "timeframes": valid, "cached": False})
 
@@ -191,7 +196,7 @@ def api_signal():
                 "confidence": float(out.get("confidence", 0.0)),
                 "timestamp": datetime.utcnow().isoformat()
             }
-        except Exception:
+        except Exception as e:
             traceback.print_exc()
             result = {
                 "symbol": symbol,
@@ -203,10 +208,11 @@ def api_signal():
             }
 
     # Store in Firestore
-    try:
-        db.collection("signals").add(result)
-    except Exception as e:
-        print("Firestore write failed:", e)
+    if db:
+        try:
+            db.collection("signals").add(result)
+        except Exception as e:
+            print("Firestore write failed:", e)
 
     return jsonify(result)
 
@@ -218,6 +224,9 @@ def api_signals_history():
     symbol = request.args.get("symbol")
     interval = request.args.get("interval")
     limit = int(request.args.get("limit", "50"))
+
+    if not db:
+        return jsonify({"signals": []})
 
     try:
         query = db.collection("signals").order_by("timestamp", direction="DESCENDING")
@@ -244,13 +253,13 @@ def api_position_size():
         per_unit = abs(entry - stop)
         if per_unit <= 0:
             return jsonify({"error": "invalid prices"}), 400
-        risk_amount = balance * (risk / 100.0)
+        risk_amount = balance * (risk/100.0)
         units = risk_amount / per_unit
         return jsonify({"position_size_units": round(units, 6)})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-# Owner endpoint (example)
+# Owner endpoint
 @app.route("/owner/add-key", methods=["POST"])
 def owner_add_key():
     res, err = require_key(owner=True)
@@ -260,28 +269,10 @@ def owner_add_key():
     role = body.get("role", "user")
     days = body.get("days", None)
     from auth import save_key_to_db
-    save_key_to_db(key, role, days)
+    save_key_to_db(key, role, days, db)
     return jsonify({"ok": True, "key": key})
 
 # ---------- Run ----------
 if __name__ == "__main__":
     print("Starting ProTraderHack backend.")
     app.run(host="0.0.0.0", port=APP_PORT)
-
-@app.route("/owner/list-keys", methods=["GET"])
-def owner_list_keys():
-    res, err = require_key(owner=True)
-    if err: return err
-    try:
-        docs = db.collection("keys").stream()
-        keys = []
-        for d in docs:
-            data = d.to_dict()
-            keys.append({
-                "key": d.id,
-                "role": data.get("role", "user"),
-                "expires": data.get("expires")
-            })
-        return jsonify({"keys": keys})
-    except Exception as e:
-        return jsonify({"error": str(e), "keys": []}), 500
