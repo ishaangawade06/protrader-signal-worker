@@ -22,9 +22,9 @@ def require_key(owner=False):
     key = request.headers.get("X-APP-KEY", "").strip()
     res = validate_key(key)
     if not res.get("valid"):
-        return None, (jsonify({"error":"invalid_or_expired_key"}), 403)
+        return None, (jsonify({"error": "invalid_or_expired_key"}), 403)
     if owner and res.get("role") != "owner":
-        return None, (jsonify({"error":"owner_access_required"}), 403)
+        return None, (jsonify({"error": "owner_access_required"}), 403)
     return res, None
 
 def safe_yf_download(symbol, interval="5m", period="7d"):
@@ -64,15 +64,16 @@ def load_cache():
             with open(CACHE_FILE, "r") as f:
                 return json.load(f)
         except Exception:
-            return {"updated": None, "data": {}}
-    return {"updated": None, "data": {}}
+            return {"data": {}}
+    return {"data": {}}
 
 def save_cache(cache):
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
 
 def cache_expired(ts):
-    if not ts: return True
+    if not ts:
+        return True
     try:
         last = datetime.fromisoformat(ts)
         return (datetime.utcnow() - last) > timedelta(days=CACHE_TTL_DAYS)
@@ -118,18 +119,29 @@ def api_timeframes():
     if not symbol:
         return jsonify({"error": "symbol param required (e.g. BTC-USD)"}), 400
     refresh = request.args.get("refresh", "false").lower() == "true"
+
     cache = load_cache()
-    key = symbol
-    if not refresh and key in cache.get("data", {}) and not cache_expired(cache.get("updated")):
-        return jsonify({"symbol": symbol, "timeframes": cache["data"][key], "cached": True})
-    candidate_intervals = ["1m","2m","5m","15m","30m","1h","1d","1wk","1mo"]
+    sym_cache = cache.get("data", {}).get(symbol, {})
+    last_updated = sym_cache.get("updated")
+
+    if not refresh and sym_cache.get("timeframes") and not cache_expired(last_updated):
+        return jsonify({
+            "symbol": symbol,
+            "timeframes": sym_cache["timeframes"],
+            "cached": True
+        })
+
+    candidate_intervals = ["1m", "2m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"]
     valid = []
     for tf in candidate_intervals:
         df = safe_yf_download(symbol, interval=tf, period="7d")
         if not df.empty:
             valid.append(tf)
-    cache.setdefault("data", {})[key] = valid
-    cache["updated"] = datetime.utcnow().isoformat()
+
+    cache.setdefault("data", {})[symbol] = {
+        "timeframes": valid,
+        "updated": datetime.utcnow().isoformat()
+    }
     save_cache(cache)
     return jsonify({"symbol": symbol, "timeframes": valid, "cached": False})
 
@@ -179,7 +191,7 @@ def api_signal():
                 "confidence": float(out.get("confidence", 0.0)),
                 "timestamp": datetime.utcnow().isoformat()
             }
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             result = {
                 "symbol": symbol,
@@ -232,7 +244,7 @@ def api_position_size():
         per_unit = abs(entry - stop)
         if per_unit <= 0:
             return jsonify({"error": "invalid prices"}), 400
-        risk_amount = balance * (risk/100.0)
+        risk_amount = balance * (risk / 100.0)
         units = risk_amount / per_unit
         return jsonify({"position_size_units": round(units, 6)})
     except Exception as e:
