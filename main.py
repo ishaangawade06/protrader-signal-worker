@@ -267,3 +267,21 @@ def owner_add_key():
 if __name__ == "__main__":
     print("Starting ProTraderHack backend.")
     app.run(host="0.0.0.0", port=APP_PORT)
+
+@app.route("/owner/list-keys", methods=["GET"])
+def owner_list_keys():
+    res, err = require_key(owner=True)
+    if err: return err
+    try:
+        docs = db.collection("keys").stream()
+        keys = []
+        for d in docs:
+            data = d.to_dict()
+            keys.append({
+                "key": d.id,
+                "role": data.get("role", "user"),
+                "expires": data.get("expires")
+            })
+        return jsonify({"keys": keys})
+    except Exception as e:
+        return jsonify({"error": str(e), "keys": []}), 500
