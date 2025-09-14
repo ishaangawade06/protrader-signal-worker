@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PTH Admin Panel</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#f4f4f9; margin:0; padding:20px; }
+    h1 { color:#333; }
+    .box { background:white; padding:20px; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.1); margin-bottom:20px; }
+    input, button { padding:10px; margin:5px; }
+    table { width:100%; border-collapse: collapse; margin-top:20px; }
+    th, td { border:1px solid #ddd; padding:8px; text-align:center; }
+    th { background:#eee; }
+  </style>
+</head>
+<body>
+  <h1>🔑 ProTraderHack Admin Panel</h1>
+
+  <div class="box">
+    <h2>Add New Key</h2>
+    <form id="addForm">
+      <input type="text" name="key" placeholder="Enter API Key" required>
+      <input type="number" name="days" placeholder="Expiry (days)">
+      <button type="submit">Add Key</button>
+    </form>
+  </div>
+
+  <div class="box">
+    <h2>Delete Key</h2>
+    <form id="deleteForm">
+      <input type="text" name="key" placeholder="Enter API Key" required>
+      <button type="submit">Delete Key</button>
+    </form>
+  </div>
+
+  <script>
+    document.getElementById("addForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const res = await fetch("/api/add-key", { method:"POST", body:fd });
+      alert(await res.text());
+    };
+
+    document.getElementById("deleteForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const res = await fetch("/api/delete-key", { method:"POST", body:fd });
+      alert(await res.text());
+    };
+  </script>
+</body>
+    </html>
