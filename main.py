@@ -113,3 +113,33 @@ def create_key():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from backend.auth import validate_key  # your earlier auth system
+
+app = FastAPI()
+
+# Allow frontend calls
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # later restrict to your domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/api/signal")
+def get_signal(api_key: str):
+    validation = validate_key(api_key)
+    if not validation.get("valid"):
+        return {"error": "Invalid or expired key"}
+
+    # Example signal
+    signal = {
+        "symbol": "BTC/USDT",
+        "action": "BUY",
+        "confidence": "93%",
+        "timestamp": "2025-09-17 14:32 UTC"
+    }
+    return {"signal": signal}
