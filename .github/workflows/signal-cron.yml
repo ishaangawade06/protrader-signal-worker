@@ -1,38 +1,22 @@
-# .github/workflows/signal-cron.yml
 name: ProTrader Signal Worker
+
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/5 * * * *"   # every 5 minutes
   workflow_dispatch: {}
 
 jobs:
   run-worker:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Write Firebase service account (optional — for auth.py / main.py)
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          echo "$FIREBASE_SERVICE_ACCOUNT" > serviceAccountKey.json
-          head -n 2 serviceAccountKey.json
-
+        with: python-version: '3.11'
+      - name: Install deps
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Run worker
         env:
           BACKEND_URL: "https://protraderhack.onrender.com"
           PROTRADER_APP_KEY: "ishaan"
-        run: |
-          python worker.py
+        run: python worker.py
