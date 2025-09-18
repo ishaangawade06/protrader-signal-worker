@@ -1,93 +1,60 @@
-import os, json, hashlib
+from flask import Flask, jsonify, request
+from firebase_admin import credentials, firestore, initialize_app
+import hashlib
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
-import firebase_admin
-from firebase_admin import credentials, firestore
 
-# ---------- Firestore Init ----------
-db = None
-try:
-    if not firebase_admin._apps:
-        # Load service account from environment
-        service_account_info = json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])
-        cred = credentials.Certificate(service_account_info)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("✅ Firestore connected successfully")
-except Exception as e:
-    print("❌ Firestore init failed:", e)
-
-# ---------- Flask App ----------
+# Flask App
 app = Flask(__name__)
 
-# ---------- Hash Helper ----------
-def hash_key(k: str) -> str:
-    return hashlib.sha256(k.encode()).hexdigest()
+# Firebase Init (use your serviceAccountKey.json in Render)
+cred = credentials.Certificate("serviceAccountKey.json")
+initialize_app(cred)
+db = firestore.client()
 
-# ---------- Save Key ----------
-def save_key_to_db(key: str, role: str = "user", days: int = None):
-    if not db:
-        return
-    expiry = None
-    if days:
-        expiry = datetime.utcnow() + timedelta(days=days)
-    doc_ref = db.collection("keys").document(hash_key(key))
-    doc_ref.set({
-        "role": role,
-        "created": datetime.utcnow().isoformat(),
-        "expiry": expiry.isoformat() if expiry else None
-    })
-    print(f"✅ Key saved: {key} ({role}, expiry={expiry})")
+# --- Helper: Hash API keys ---
+def hash_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
 
-# ---------- Validate Key ----------
-def validate_key(key: str):
-    if not db:
-        return {"valid": False}
-    try:
-        doc = db.collection("keys").document(hash_key(key)).get()
-        if not doc.exists:
-            return {"valid": False}
-        data = doc.to_dict()
-        expiry = data.get("expiry")
-        if expiry:
-            exp = datetime.fromisoformat(expiry)
-            if datetime.utcnow() > exp:
-                return {"valid": False, "expired": True}
-        return {"valid": True, "role": data.get("role", "user"), "expiry": expiry}
-    except Exception as e:
-        print("validate_key error:", e)
-        return {"valid": False}
-
-# ---------- API Routes ----------
+# --- Root Route ---
 @app.route("/")
 def home():
-    return jsonify({"status": "ProTraderHack API running ✅"})
+    return jsonify({"message": "🚀 ProTraderHack Backend Running"})
 
-@app.route("/add-signal", methods=["POST"])
-def add_signal():
+# --- Sample Signals API ---
+@app.route("/api/signals", methods=["GET"])
+def get_signals():
     """
-    Add trading signal to Firestore (visible in real-time on frontend).
-    Example JSON:
-    {
-        "asset": "BTC/USDT",
-        "signal": "BUY",
-        "price": 43120.50,
-        "api_key": "SECRETKEY123"
-    }
+    This will later fetch real signals from Firestore,
+    but for now we return dummy JSON so frontend works.
     """
-    data = request.json
-    api_key = data.get("api_key")
-    if not validate_key(api_key).get("valid"):
-        return jsonify({"error": "Invalid API key"}), 403
+    dummy_signals = [
+        {"pair": "BTC/USDT", "signal": "BUY", "price": 27450, "time": datetime.utcnow().isoformat()},
+        {"pair": "ETH/USDT", "signal": "SELL", "price": 1620, "time": datetime.utcnow().isoformat()},
+        {"pair": "BNB/USDT", "signal": "BUY", "price": 215, "time": datetime.utcnow().isoformat()}
+    ]
+    return jsonify(dummy_signals)
 
-    signal = {
-        "asset": data.get("asset"),
-        "signal": data.get("signal"),
-        "price": data.get("price"),
-        "time": datetime.utcnow().isoformat()
-    }
-    db.collection("signals").add(signal)
-    return jsonify({"success": True, "signal": signal})
+# --- API Key Validation Example (for later use) ---
+@app.route("/api/validate", methods=["POST"])
+def validate_key():
+    data = request.get_json()
+    key = data.get("key")
 
+    if not key:
+        return jsonify({"error": "API key required"}), 400
+
+    hashed = hash_key(key)
+    doc_ref = db.collection("api_keys").document(hashed).get()
+
+    if doc_ref.exists:
+        doc = doc_ref.to_dict()
+        expiry = doc.get("expiry")
+        if expiry and datetime.utcnow() > expiry:
+            return jsonify({"valid": False, "reason": "Expired"})
+        return jsonify({"valid": True, "role": doc.get("role", "user")})
+    else:
+        return jsonify({"valid": False, "reason": "Invalid key"})
+
+# --- Run locally (Render will use gunicorn instead) ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)
