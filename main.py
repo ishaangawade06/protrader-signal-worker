@@ -3,6 +3,7 @@ import json
 import hashlib
 import datetime
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -15,6 +16,7 @@ db = firestore.client()
 
 # ---------- Flask App ----------
 app = Flask(__name__)
+CORS(app)   # enable CORS so frontend (GitHub Pages) can call backend
 
 # ---------- Utility ----------
 def hash_key(api_key: str) -> str:
