@@ -1,59 +1,78 @@
-import os
-import json
-import hashlib
-import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, firestore
+import ccxt
 
-# ---------- Firebase Setup ----------
-service_account_info = json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])
-cred = credentials.Certificate(service_account_info)
+app = Flask(__name__)
+CORS(app)
+
+# 🔑 Firebase init
+cred = credentials.Certificate("serviceAccount.json")
 firebase_admin.initialize_app(cred)
-
 db = firestore.client()
 
-# ---------- Flask App ----------
-app = Flask(__name__)
-CORS(app)   # enable CORS so frontend (GitHub Pages) can call backend
+@app.route("/")
+def home():
+    return jsonify({"status": "PTH Backend running"})
 
-# ---------- Utility ----------
-def hash_key(api_key: str) -> str:
-    """Securely hash API key using SHA256"""
-    return hashlib.sha256(api_key.encode()).hexdigest()
+# ✅ Balance endpoint
+@app.route("/balance", methods=["POST"])
+def get_balance():
+    try:
+        data = request.json
+        api_key = data.get("apiKey")
+        secret = data.get("secret")
 
-# ---------- Routes ----------
+        exchange = ccxt.binance({
+            "apiKey": api_key,
+            "secret": secret,
+            "enableRateLimit": True
+        })
+        balance = exchange.fetch_balance()
+        return jsonify(balance)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-@app.route("/ping", methods=["GET"])
-def ping():
-    return jsonify({"message": "PTH Backend is live ✅"})
+# ✅ Buy endpoint
+@app.route("/buy", methods=["POST"])
+def buy_order():
+    try:
+        data = request.json
+        api_key = data.get("apiKey")
+        secret = data.get("secret")
+        symbol = data.get("symbol", "BTC/USDT")
+        amount = float(data.get("amount", 0.001))
 
-@app.route("/validate", methods=["POST"])
-def validate():
-    """Validate API key and expiry"""
-    data = request.json
-    api_key = data.get("api_key")
+        exchange = ccxt.binance({
+            "apiKey": api_key,
+            "secret": secret,
+            "enableRateLimit": True
+        })
+        order = exchange.create_market_buy_order(symbol, amount)
+        return jsonify(order)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-    if not api_key:
-        return jsonify({"error": "API key missing"}), 400
+# ✅ Sell endpoint
+@app.route("/sell", methods=["POST"])
+def sell_order():
+    try:
+        data = request.json
+        api_key = data.get("apiKey")
+        secret = data.get("secret")
+        symbol = data.get("symbol", "BTC/USDT")
+        amount = float(data.get("amount", 0.001))
 
-    hashed = hash_key(api_key)
-    doc_ref = db.collection("api_keys").document(hashed)
-    doc = doc_ref.get()
+        exchange = ccxt.binance({
+            "apiKey": api_key,
+            "secret": secret,
+            "enableRateLimit": True
+        })
+        order = exchange.create_market_sell_order(symbol, amount)
+        return jsonify(order)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-    if not doc.exists:
-        return jsonify({"error": "Invalid API key"}), 403
-
-    record = doc.to_dict()
-    expiry = record.get("expiry")
-
-    if expiry and datetime.datetime.utcnow() > expiry:
-        return jsonify({"error": "API key expired"}), 403
-
-    return jsonify({"success": True, "role": record.get("role", "user")})
-
-# ---------- Run ----------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
