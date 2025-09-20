@@ -1,5 +1,6 @@
 import os
 import json
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import firebase_admin
@@ -23,6 +24,24 @@ CORS(app)
 binance_sessions = {}
 zerodha_sessions = {}
 angel_sessions = {}
+
+# ================== ANGELONE SYMBOL MAP ==================
+symbol_token_map = {}
+
+def load_scrip_master():
+    global symbol_token_map
+    try:
+        url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        resp = requests.get(url, timeout=15)
+        data = resp.json()
+        for s in data:
+            key = f"{s['symbol']}-{s['exch_seg']}"
+            symbol_token_map[key] = s['token']
+        print(f"✅ Loaded {len(symbol_token_map)} AngelOne symbols")
+    except Exception as e:
+        print("❌ Failed to load scrip master:", e)
+
+load_scrip_master()
 
 # ================== BINANCE / EXNESS ==================
 @app.route("/binance/link", methods=["POST"])
@@ -125,9 +144,6 @@ def zerodha_trade():
 ANGEL_API_KEY = os.getenv("ANGEL_API_KEY", "0LmP8dY3")
 ANGEL_API_SECRET = os.getenv("ANGEL_API_SECRET", "ba1fb5eb-bbb3-439f-ae93-4c355b412abf")
 
-# ⚠️ Placeholder: token map (must be loaded from AngelOne scrip master)
-symbol_token_map = {"INFY-EQ": "3045"}  # Example only
-
 @app.route("/angelone/login", methods=["POST"])
 def angel_login():
     try:
@@ -164,17 +180,17 @@ def angel_trade():
     try:
         data = request.json
         uid = data.get("uid")
-        symbol = data.get("symbol")   # e.g. INFY-EQ
+        symbol = data.get("symbol")   # e.g. INFY-NSE
         side = data.get("side")
         qty = int(data.get("quantity", 1))
         if uid not in angel_sessions:
             return jsonify({"error": "Not logged in"}), 400
         obj = angel_sessions[uid]["obj"]
         if symbol not in symbol_token_map:
-            return jsonify({"error": "Symbol not mapped"}), 400
+            return jsonify({"error": f"Symbol {symbol} not found"}), 400
         orderparams = {
             "variety": "NORMAL",
-            "tradingsymbol": symbol,
+            "tradingsymbol": symbol.split("-")[0],
             "symboltoken": symbol_token_map[symbol],
             "transactiontype": "BUY" if side.lower()=="buy" else "SELL",
             "exchange": "NSE",
