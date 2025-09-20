@@ -1,78 +1,95 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import firebase_admin
-from firebase_admin import credentials, firestore
 import ccxt
+from kiteconnect import KiteConnect
 
 app = Flask(__name__)
 CORS(app)
 
-# 🔑 Firebase init
-cred = credentials.Certificate("serviceAccount.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Zerodha config (hardcoded for now)
+ZERODHA_API_KEY = "no0ptvria732gj4z"
+ZERODHA_API_SECRET = "dj2mv7mrpge9cqmsankxayxhly0i69k2"
+zerodha_sessions = {}
 
 @app.route("/")
 def home():
-    return jsonify({"status": "PTH Backend running"})
+    return jsonify({"message": "ProTraderHack Backend Running"})
 
-# ✅ Balance endpoint
+# Balance
 @app.route("/balance", methods=["POST"])
 def get_balance():
     try:
-        data = request.json
-        api_key = data.get("apiKey")
-        secret = data.get("secret")
+        data=request.json
+        broker=data.get("name")
+        api_key=data.get("apiKey")
+        secret=data.get("secretKey")
+        token=data.get("token")
 
-        exchange = ccxt.binance({
-            "apiKey": api_key,
-            "secret": secret,
-            "enableRateLimit": True
-        })
-        balance = exchange.fetch_balance()
-        return jsonify(balance)
+        if broker in ["binance","exness"]:
+            exchange=getattr(ccxt, broker)({
+                "apiKey": api_key,
+                "secret": secret,
+                "enableRateLimit": True
+            })
+            balance=exchange.fetch_balance()
+            return jsonify(balance)
+
+        elif broker=="zerodha":
+            return jsonify({"broker":"zerodha","message":"Zerodha account requires login. Use /zerodha/login."})
+
+        elif broker=="angelone":
+            return jsonify({"broker":"angelone","message":"AngelOne support coming soon."})
+
+        elif broker=="quotex":
+            return jsonify({"error":"Quotex support coming soon."})
+
+        else:
+            return jsonify({"error":"Unsupported broker"}),400
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": str(e)}),400
 
-# ✅ Buy endpoint
-@app.route("/buy", methods=["POST"])
-def buy_order():
+# Trade
+@app.route("/trade", methods=["POST"])
+def place_trade():
     try:
-        data = request.json
-        api_key = data.get("apiKey")
-        secret = data.get("secret")
-        symbol = data.get("symbol", "BTC/USDT")
-        amount = float(data.get("amount", 0.001))
+        data=request.json
+        broker=data.get("name")
+        api_key=data.get("apiKey")
+        secret=data.get("secretKey")
+        symbol=data.get("symbol")
+        side=data.get("side")
+        amount=float(data.get("amount", 0.001))
 
-        exchange = ccxt.binance({
-            "apiKey": api_key,
-            "secret": secret,
-            "enableRateLimit": True
-        })
-        order = exchange.create_market_buy_order(symbol, amount)
-        return jsonify(order)
+        if broker in ["binance","exness"]:
+            exchange=getattr(ccxt, broker)({
+                "apiKey": api_key,
+                "secret": secret,
+                "enableRateLimit": True
+            })
+            order=exchange.create_market_order(symbol, side, amount)
+            return jsonify(order)
+
+        elif broker=="zerodha":
+            return jsonify({"error":"Use /zerodha/trade endpoint for Zerodha"}),400
+
+        elif broker=="angelone":
+            return jsonify({"error":"AngelOne trading coming soon."})
+
+        elif broker=="quotex":
+            return jsonify({"error":"Quotex trading coming soon."})
+
+        else:
+            return jsonify({"error":"Unsupported broker"}),400
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": str(e)}),400
 
-# ✅ Sell endpoint
-@app.route("/sell", methods=["POST"])
-def sell_order():
-    try:
-        data = request.json
-        api_key = data.get("apiKey")
-        secret = data.get("secret")
-        symbol = data.get("symbol", "BTC/USDT")
-        amount = float(data.get("amount", 0.001))
+# Zerodha login
+@app.route("/zerodha/login", methods=["GET"])
+def zerodha_login():
+    user_id=request.args.get("uid")
+    kite=KiteConnect(api_key=ZERODHA_API_KEY)
+    login_url=kite.login_url()
+    zerodha_sessions[user_id]={"kite":kite}
+    return jsonify({"login_url": login_url})
 
-        exchange = ccxt.binance({
-            "apiKey": api_key,
-            "secret": secret,
-            "enableRateLimit": True
-        })
-        order = exchange.create_market_sell_order(symbol, amount)
-        return jsonify(order)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+@app.route("/zer
