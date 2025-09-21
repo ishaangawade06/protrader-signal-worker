@@ -10,3 +10,6 @@ gunicorn
 ccxt
 python-dateutil
 kiteconnect
+smartapi-python
+pyotp
+apscheduler
