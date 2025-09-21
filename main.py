@@ -1,6 +1,6 @@
 import os
-import json
 import requests
+import atexit
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import firebase_admin
@@ -11,6 +11,7 @@ import ccxt
 from kiteconnect import KiteConnect
 from smartapi import SmartConnect
 import pyotp
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Firebase setup
 cred = credentials.Certificate("serviceAccount.json")
@@ -32,16 +33,23 @@ def load_scrip_master():
     global symbol_token_map
     try:
         url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=20)
         data = resp.json()
+        temp_map = {}
         for s in data:
             key = f"{s['symbol']}-{s['exch_seg']}"
-            symbol_token_map[key] = s['token']
+            temp_map[key] = s['token']
+        symbol_token_map = temp_map
         print(f"✅ Loaded {len(symbol_token_map)} AngelOne symbols")
     except Exception as e:
         print("❌ Failed to load scrip master:", e)
 
+# Initial load + daily refresh
 load_scrip_master()
+scheduler = BackgroundScheduler()
+scheduler.add_job(load_scrip_master, 'interval', days=1)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
 
 # ================== BINANCE / EXNESS ==================
 @app.route("/binance/link", methods=["POST"])
@@ -204,6 +212,14 @@ def angel_trade():
         }
         orderId = obj.placeOrder(orderparams)
         return jsonify({"message": "✅ AngelOne order placed", "order_id": orderId})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/angelone/refreshSymbols", methods=["POST"])
+def angel_refresh():
+    try:
+        load_scrip_master()
+        return jsonify({"message": f"✅ Reloaded {len(symbol_token_map)} AngelOne symbols"})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
