@@ -116,6 +116,22 @@ def binance_withdraw():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+# --- Binance/Exness transactions
+@app.route("/binance/transactions", methods=["POST"])
+def binance_transactions():
+    data = request.json
+    try:
+        exchange = getattr(ccxt, data.get("exchange", "binance"))({
+            "apiKey": data["apiKey"],
+            "secret": data["secretKey"],
+            "enableRateLimit": True
+        })
+        deposits = exchange.fetch_deposits()
+        withdraws = exchange.fetch_withdrawals()
+        return jsonify({"deposits": deposits, "withdrawals": withdraws})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
 # --- Zerodha placeholders
 @app.route("/zerodha/deposit", methods=["POST"])
 def zerodha_deposit():
@@ -125,6 +141,10 @@ def zerodha_deposit():
 def zerodha_withdraw():
     return jsonify({"message": "Deposit/Withdraw must be done via Zerodha app."})
 
+@app.route("/zerodha/transactions", methods=["POST"])
+def zerodha_transactions():
+    return jsonify({"message": "Transaction history not available via API. Please check Zerodha app."})
+
 # --- AngelOne placeholders
 @app.route("/angelone/deposit", methods=["POST"])
 def angelone_deposit():
@@ -133,6 +153,10 @@ def angelone_deposit():
 @app.route("/angelone/withdraw", methods=["POST"])
 def angelone_withdraw():
     return jsonify({"message": "Deposit/Withdraw must be done via AngelOne app."})
+
+@app.route("/angelone/transactions", methods=["POST"])
+def angelone_transactions():
+    return jsonify({"message": "Transaction history not available via API. Please check AngelOne app."})
 
 # --- AngelOne trade
 @app.route("/angelone/trade", methods=["POST"])
