@@ -3,21 +3,19 @@ from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
-from kiteconnect import KiteConnect
-from smartapi import SmartConnect
-import pyotp
 
-# --- Flask app ---
 app = Flask(__name__)
 CORS(app)
 
-# --- Firebase ---
+# --- Firebase Init ---
 if not firebase_admin._apps:
     cred = credentials.Certificate("serviceAccount.json")
     firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# --- Health Check ---
+# --- Admin Secret ---
+PTH_ADMIN_SECRET = "supersecret123"
+
 @app.route("/")
 def home():
     return jsonify({"status": "ok", "service": "ProTraderHack Backend"})
@@ -45,41 +43,14 @@ def validate_key():
     return jsonify({"valid": True, "role": info.get("role", "user")})
 
 # =====================================================
-# 🏦 Broker Integrations
-# =====================================================
-@app.route("/zerodha/login", methods=["POST"])
-def zerodha_login():
-    data = request.json
-    try:
-        kite = KiteConnect(api_key=data["apiKey"])
-        totp = pyotp.TOTP(data["totpSecret"]).now()
-        return jsonify({
-            "message": "Zerodha login requires browser redirect.",
-            "totp": totp,
-            "login_url": "https://kite.zerodha.com/"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-@app.route("/angelone/login", methods=["POST"])
-def angelone_login():
-    data = request.json
-    try:
-        obj = SmartConnect(api_key=data["apiKey"])
-        totp = pyotp.TOTP(data["totpSecret"]).now()
-        session_data = obj.generateSession(data["clientId"], data["password"], totp)
-        refreshToken = session_data['data']['refreshToken']
-        obj.generateToken(refreshToken)
-        return jsonify({"message": "✅ AngelOne login success", "session": session_data})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-# =====================================================
 # 💳 Deposit / Withdraw Tracking
 # =====================================================
 @app.route("/transaction", methods=["POST"])
 def transaction():
+    """
+    Save deposit/withdraw transaction in Firestore
+    Body: { "user": email/uid, "broker": "zerodha/angelone", "type": "deposit/withdraw" }
+    """
     data = request.json
     user = data.get("user")
     broker = data.get("broker")
@@ -99,41 +70,53 @@ def transaction():
     ref = db.collection("transactions").add(entry)
     return jsonify({"message": "Transaction logged", "id": ref[1].id, "entry": entry})
 
-
 @app.route("/transactions", methods=["GET"])
 def transactions():
+    """ Return all transactions (admin view) """
     snap = db.collection("transactions").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).get()
     results = [doc.to_dict() | {"id": doc.id} for doc in snap]
     return jsonify(results)
 
+@app.route("/transactions/<txid>", methods=["PATCH"])
+def update_transaction(txid):
+    """ Update transaction status (admin only) """
+    auth_header = request.headers.get("X-Admin-Secret")
+    if auth_header != PTH_ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+    status = data.get("status")
+    if status not in ["processing", "completed", "cancelled"]:
+        return jsonify({"error": "Invalid status"}), 400
+
+    db.collection("transactions").document(txid).update({"status": status})
+    return jsonify({"message": f"Transaction {txid} updated to {status}"})
+
 # =====================================================
-# 📢 Notifications
+# 📢 Broadcast Notification (Admin Only)
 # =====================================================
 @app.route("/send_notification", methods=["POST"])
 def send_notification():
-    """
-    Admins can broadcast notifications to all valid keys
-    Body: { "message": "...", "symbol": "...", "signal": "BUY/SELL/HOLD" }
-    """
-    data = request.json
-    snap = db.collection("keys").get()
-    count = 0
-    for doc in snap:
-        info = doc.to_dict()
-        expiry = info.get("expiry")
-        if expiry and datetime.utcnow() > datetime.fromisoformat(expiry):
-            continue
-        db.collection("notifications").add({
-            "key": doc.id,
-            "signal": {
-                "signal": data.get("signal", "INFO"),
-                "meta": {"symbol": data.get("symbol", "GENERIC"), "last_price": data.get("price", "-")}
-            },
-            "message": data.get("message"),
-            "timestamp": datetime.utcnow().isoformat()
-        })
-        count += 1
-    return jsonify({"sent_to": count})
+    auth_header = request.headers.get("X-Admin-Secret")
+    if auth_header != PTH_ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json or {}
+    message = data.get("message", "")
+    symbol = data.get("symbol", "GENERIC")
+    signal = data.get("signal", "INFO")
+    price = data.get("price", "-")
+
+    entry = {
+        "message": message,
+        "symbol": symbol,
+        "signal": signal,
+        "price": price,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    db.collection("notifications").add(entry)
+
+    return jsonify({"sent_to": "all_valid_users", "entry": entry})
 
 # =====================================================
 # 🚀 Run
