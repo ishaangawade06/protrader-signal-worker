@@ -6,7 +6,6 @@ from datetime import datetime
 from kiteconnect import KiteConnect
 from smartapi import SmartConnect
 import pyotp
-import os
 
 # --- Flask app ---
 app = Flask(__name__)
@@ -48,14 +47,11 @@ def validate_key():
 # =====================================================
 # 🏦 Broker Integrations
 # =====================================================
-
-# --- Zerodha Login ---
 @app.route("/zerodha/login", methods=["POST"])
 def zerodha_login():
     data = request.json
     try:
         kite = KiteConnect(api_key=data["apiKey"])
-        # Generate TOTP
         totp = pyotp.TOTP(data["totpSecret"]).now()
         return jsonify({
             "message": "Zerodha login requires browser redirect.",
@@ -65,7 +61,7 @@ def zerodha_login():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-# --- AngelOne Login ---
+
 @app.route("/angelone/login", methods=["POST"])
 def angelone_login():
     data = request.json
@@ -78,6 +74,66 @@ def angelone_login():
         return jsonify({"message": "✅ AngelOne login success", "session": session_data})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+# =====================================================
+# 💳 Deposit / Withdraw Tracking
+# =====================================================
+@app.route("/transaction", methods=["POST"])
+def transaction():
+    data = request.json
+    user = data.get("user")
+    broker = data.get("broker")
+    ttype = data.get("type")
+
+    if not all([user, broker, ttype]):
+        return jsonify({"error": "Missing fields"}), 400
+
+    entry = {
+        "user": user,
+        "broker": broker,
+        "type": ttype,
+        "status": "processing",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    ref = db.collection("transactions").add(entry)
+    return jsonify({"message": "Transaction logged", "id": ref[1].id, "entry": entry})
+
+
+@app.route("/transactions", methods=["GET"])
+def transactions():
+    snap = db.collection("transactions").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).get()
+    results = [doc.to_dict() | {"id": doc.id} for doc in snap]
+    return jsonify(results)
+
+# =====================================================
+# 📢 Notifications
+# =====================================================
+@app.route("/send_notification", methods=["POST"])
+def send_notification():
+    """
+    Admins can broadcast notifications to all valid keys
+    Body: { "message": "...", "symbol": "...", "signal": "BUY/SELL/HOLD" }
+    """
+    data = request.json
+    snap = db.collection("keys").get()
+    count = 0
+    for doc in snap:
+        info = doc.to_dict()
+        expiry = info.get("expiry")
+        if expiry and datetime.utcnow() > datetime.fromisoformat(expiry):
+            continue
+        db.collection("notifications").add({
+            "key": doc.id,
+            "signal": {
+                "signal": data.get("signal", "INFO"),
+                "meta": {"symbol": data.get("symbol", "GENERIC"), "last_price": data.get("price", "-")}
+            },
+            "message": data.get("message"),
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        count += 1
+    return jsonify({"sent_to": count})
 
 # =====================================================
 # 🚀 Run
