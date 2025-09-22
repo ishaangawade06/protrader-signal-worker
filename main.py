@@ -47,10 +47,6 @@ def validate_key():
 # =====================================================
 @app.route("/transaction", methods=["POST"])
 def transaction():
-    """
-    Save deposit/withdraw transaction in Firestore
-    Body: { "user": email/uid, "broker": "zerodha/angelone", "type": "deposit/withdraw" }
-    """
     data = request.json
     user = data.get("user")
     broker = data.get("broker")
@@ -72,14 +68,12 @@ def transaction():
 
 @app.route("/transactions", methods=["GET"])
 def transactions():
-    """ Return all transactions (admin view) """
     snap = db.collection("transactions").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).get()
     results = [doc.to_dict() | {"id": doc.id} for doc in snap]
     return jsonify(results)
 
 @app.route("/transactions/<txid>", methods=["PATCH"])
 def update_transaction(txid):
-    """ Update transaction status (admin only) """
     auth_header = request.headers.get("X-Admin-Secret")
     if auth_header != PTH_ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 403
