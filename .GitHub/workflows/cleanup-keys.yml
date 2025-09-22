@@ -1,0 +1,22 @@
+name: Cleanup Expired Keys
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # every day at midnight UTC
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install firebase-admin
+      - name: Run cleanup
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: serviceAccount.json
+        run: python cleanup_keys.py
