@@ -1,159 +1,140 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import os
+import json
+from datetime import datetime
+
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
-import requests
 
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+import ccxt
+from kiteconnect import KiteConnect
+from smartapi import SmartConnect  # AngelOne
+
+# ------------------ FIREBASE INIT ------------------
+cred = credentials.Certificate("serviceAccount.json")
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+# ------------------ FLASK APP ------------------
 app = Flask(__name__)
 CORS(app)
 
-# --- Firebase Init ---
-if not firebase_admin._apps:
-    cred = credentials.Certificate("serviceAccount.json")
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
+# ------------------ BROKER HELPERS ------------------
 
-# --- Admin Secret ---
-PTH_ADMIN_SECRET = "supersecret123"
+def get_binance_client(api_key, secret_key):
+    return ccxt.binance({
+        "apiKey": api_key,
+        "secret": secret_key
+    })
 
-@app.route("/")
-def home():
-    return jsonify({"status": "ok", "service": "ProTraderHack Backend"})
+def get_exness_client(api_key, secret_key):
+    return ccxt.exness({
+        "apiKey": api_key,
+        "secret": secret_key
+    })
 
-# =====================================================
-# 🔑 Key Validation
-# =====================================================
-@app.route("/validate_key", methods=["POST"])
-def validate_key():
-    data = request.json
-    key = data.get("key")
-    if not key:
-        return jsonify({"error": "No key provided"}), 400
+def get_zerodha_client(api_key, secret_key):
+    kite = KiteConnect(api_key=api_key)
+    kite.set_access_token(secret_key)
+    return kite
 
-    doc = db.collection("keys").document(key).get()
-    if not doc.exists:
-        return jsonify({"valid": False, "reason": "Key not found"})
+def get_angel_client(api_key, secret_key):
+    smart = SmartConnect(api_key=api_key)
+    smart.generateSession(api_key, secret_key)
+    return smart
 
-    info = doc.to_dict()
-    expiry = info.get("expiry")
+# ------------------ ROUTES ------------------
 
-    if expiry and datetime.utcnow() > datetime.fromisoformat(expiry):
-        return jsonify({"valid": False, "reason": "Expired"})
-
-    return jsonify({"valid": True, "role": info.get("role", "user")})
-
-# =====================================================
-# 💳 Deposit / Withdraw (Broker Integrated)
-# =====================================================
 @app.route("/deposit", methods=["POST"])
 def deposit():
-    data = request.json
-    user = data.get("user")
-    broker = data.get("broker")
-    amount = data.get("amount", 0)
+    try:
+        data = request.json
+        broker = data.get("broker")
+        api_key = data.get("api_key")
+        secret_key = data.get("secret_key")
+        amount = data.get("amount")
 
-    if not all([user, broker, amount]):
-        return jsonify({"error": "Missing fields"}), 400
+        tx_id = f"tx_{int(datetime.utcnow().timestamp())}"
+        ref = db.collection("transactions").document(tx_id)
+        ref.set({
+            "broker": broker,
+            "amount": amount,
+            "type": "deposit",
+            "status": "processing",
+            "created_at": datetime.utcnow().isoformat()
+        })
 
-    entry = {
-        "user": user,
-        "broker": broker,
-        "type": "deposit",
-        "amount": amount,
-        "status": "processing",
-        "timestamp": datetime.utcnow().isoformat()
-    }
+        if broker in ["binance", "exness"]:
+            # Direct API transfer simulation
+            ref.update({"status": "completed"})
+            return jsonify({"status": "completed", "tx_id": tx_id})
 
-    # Handle broker cases
-    if broker.lower() in ["zerodha", "angelone"]:
-        entry["redirect_url"] = f"https://{broker}.com/deposit"
-    elif broker.lower() == "binance":
-        # Example Binance API call (pseudo)
-        entry["status"] = "completed"
-    elif broker.lower() == "exness":
-        # Example Exness API call (pseudo)
-        entry["status"] = "completed"
+        elif broker == "zerodha":
+            return jsonify({
+                "status": "redirect",
+                "url": "https://kite.zerodha.com/funds"
+            })
 
-    ref = db.collection("transactions").add(entry)
-    entry["id"] = ref[1].id
-    return jsonify(entry)
+        elif broker == "angelone":
+            return jsonify({
+                "status": "redirect",
+                "url": "https://trade.angelone.in/funds"
+            })
+
+        else:
+            return jsonify({"error": "Unsupported broker"}), 400
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/withdraw", methods=["POST"])
 def withdraw():
-    data = request.json
-    user = data.get("user")
-    broker = data.get("broker")
-    amount = data.get("amount", 0)
+    try:
+        data = request.json
+        broker = data.get("broker")
+        api_key = data.get("api_key")
+        secret_key = data.get("secret_key")
+        amount = data.get("amount")
 
-    if not all([user, broker, amount]):
-        return jsonify({"error": "Missing fields"}), 400
+        tx_id = f"tx_{int(datetime.utcnow().timestamp())}"
+        ref = db.collection("transactions").document(tx_id)
+        ref.set({
+            "broker": broker,
+            "amount": amount,
+            "type": "withdraw",
+            "status": "processing",
+            "created_at": datetime.utcnow().isoformat()
+        })
 
-    entry = {
-        "user": user,
-        "broker": broker,
-        "type": "withdraw",
-        "amount": amount,
-        "status": "processing",
-        "timestamp": datetime.utcnow().isoformat()
-    }
+        if broker in ["binance", "exness"]:
+            # Direct API withdrawal simulation
+            ref.update({"status": "completed"})
+            return jsonify({"status": "completed", "tx_id": tx_id})
 
-    if broker.lower() in ["zerodha", "angelone"]:
-        entry["redirect_url"] = f"https://{broker}.com/withdraw"
-    elif broker.lower() == "binance":
-        entry["status"] = "completed"
-    elif broker.lower() == "exness":
-        entry["status"] = "completed"
+        elif broker == "zerodha":
+            return jsonify({
+                "status": "redirect",
+                "url": "https://kite.zerodha.com/funds"
+            })
 
-    ref = db.collection("transactions").add(entry)
-    entry["id"] = ref[1].id
-    return jsonify(entry)
+        elif broker == "angelone":
+            return jsonify({
+                "status": "redirect",
+                "url": "https://trade.angelone.in/funds"
+            })
 
-# =====================================================
-# 📜 Transactions
-# =====================================================
-@app.route("/transactions", methods=["GET"])
-def transactions():
-    snap = db.collection("transactions").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).get()
-    results = [doc.to_dict() | {"id": doc.id} for doc in snap]
-    return jsonify(results)
+        else:
+            return jsonify({"error": "Unsupported broker"}), 400
 
-@app.route("/transactions/<txid>", methods=["PATCH"])
-def update_transaction(txid):
-    auth_header = request.headers.get("X-Admin-Secret")
-    if auth_header != PTH_ADMIN_SECRET:
-        return jsonify({"error": "Unauthorized"}), 403
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    data = request.json
-    status = data.get("status")
-    if status not in ["processing", "completed", "cancelled"]:
-        return jsonify({"error": "Invalid status"}), 400
+@app.route("/")
+def index():
+    return jsonify({"message": "PTH backend running"})
 
-    db.collection("transactions").document(txid).update({"status": status})
-    return jsonify({"message": f"Transaction {txid} updated to {status}"})
-
-# =====================================================
-# 📢 Broadcast Notification (Admin Only)
-# =====================================================
-@app.route("/send_notification", methods=["POST"])
-def send_notification():
-    auth_header = request.headers.get("X-Admin-Secret")
-    if auth_header != PTH_ADMIN_SECRET:
-        return jsonify({"error": "Unauthorized"}), 403
-
-    data = request.json or {}
-    entry = {
-        "message": data.get("message", ""),
-        "symbol": data.get("symbol", "GENERIC"),
-        "signal": data.get("signal", "INFO"),
-        "price": data.get("price", "-"),
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    db.collection("notifications").add(entry)
-    return jsonify({"sent_to": "all_valid_users", "entry": entry})
-
-# =====================================================
-# 🚀 Run
-# =====================================================
+# ------------------ MAIN ------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
