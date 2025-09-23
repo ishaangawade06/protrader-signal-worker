@@ -1,81 +1,74 @@
-# main.py (replace file in protrader-signal-worker)
+# main.py  -- replace in protrader-signal-worker
 import os
 import json
 from datetime import datetime, timedelta
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
+# optional dependencies: ccxt used for OHLC
+try:
+    import ccxt
+except Exception:
+    ccxt = None
+
+# Firebase admin
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-import ccxt
-
-# Optional imports (used if you enable broker SDKs)
-try:
-    from kiteconnect import KiteConnect
-except Exception:
-    KiteConnect = None
-try:
-    from smartapi import SmartConnect
-except Exception:
-    SmartConnect = None
-
-# ------------------ CONFIG ------------------
-# Admin secret for admin-only endpoints (change immediately in prod)
+# ---------- config ----------
 PTH_ADMIN_SECRET = os.environ.get("PTH_ADMIN_SECRET", "supersecret123")
-
-# Path to service account JSON (or use env var to pass JSON string)
 SERVICE_ACCOUNT_PATH = os.environ.get("SERVICE_ACCOUNT_PATH", "serviceAccount.json")
+FIREBASE_SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")  # optional JSON string
+PORT = int(os.environ.get("PORT", 5000))
 
-# ------------------ FIREBASE INIT ------------------
+# ---------- firebase init ----------
 if not firebase_admin._apps:
     if os.path.exists(SERVICE_ACCOUNT_PATH):
         cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+    elif FIREBASE_SERVICE_ACCOUNT:
+        cred = credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT))
     else:
-        # Try to read env var FIREBASE_SERVICE_ACCOUNT (JSON string)
-        svc = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-        if not svc:
-            raise RuntimeError("No Firebase service account provided (serviceAccount.json or FIREBASE_SERVICE_ACCOUNT).")
-        cred = credentials.Certificate(json.loads(svc))
+        raise RuntimeError("No Firebase service account found. Set serviceAccount.json or FIREBASE_SERVICE_ACCOUNT env.")
     firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# ------------------ FLASK APP ------------------
+# ---------- app ----------
 app = Flask(__name__)
 CORS(app)
 
 
-# ------------------ UTIL ------------------
 def now_iso():
     return datetime.utcnow().isoformat()
 
-def is_key_valid(doc):
-    info = doc.to_dict()
+
+def is_key_valid_doc(kdoc):
+    info = kdoc.to_dict() or {}
     expiry = info.get("expiry")
     if not expiry:
         return True
     try:
         return datetime.utcnow() <= datetime.fromisoformat(expiry)
     except Exception:
-        return False
+        return True
 
-# ------------------ PUBLIC ROUTES ------------------
-@app.route("/")
+
+# ---------- root ----------
+@app.route("/", methods=["GET"])
 def root():
-    return jsonify({"message": "PTH backend running", "time": now_iso()})
+    return jsonify({"service": "protrader-backend", "time": now_iso()})
 
-# Validate key: body { "key": "<keystr>" }
+
+# ---------- key validation ----------
 @app.route("/validate_key", methods=["POST"])
 def validate_key():
     data = request.json or {}
     key = data.get("key")
     if not key:
-        return jsonify({"error": "No key provided"}), 400
+        return jsonify({"error": "key missing"}), 400
     doc = db.collection("keys").document(key).get()
     if not doc.exists:
         return jsonify({"valid": False, "reason": "Key not found"})
-    info = doc.to_dict()
+    info = doc.to_dict() or {}
     expiry = info.get("expiry")
     if expiry:
         try:
@@ -85,31 +78,24 @@ def validate_key():
             pass
     return jsonify({"valid": True, "role": info.get("role", "user"), "expiry": expiry})
 
-# ------------------ OHLC Endpoint (for charts) ------------------
-# GET /ohlc?symbol=BTC/USDT&tf=1m&limit=200
+
+# ---------- OHLC for charts ----------
 @app.route("/ohlc", methods=["GET"])
 def ohlc():
     symbol = request.args.get("symbol", "BTC/USDT")
     tf = request.args.get("tf", "1m")
-    limit = int(request.args.get("limit", "200"))
+    limit = int(request.args.get("limit", 200))
+    if ccxt is None:
+        return jsonify({"error": "ccxt not installed on server"}), 500
     try:
         exchange = ccxt.binance()
-        # convert tf to ccxt timeframe (assume match)
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
-        # ohlcv -> list of [ts, open, high, low, close, vol]
         return jsonify({"symbol": symbol, "tf": tf, "data": ohlcv})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-# ------------------ SIGNALS ------------------
-# Worker or admin can POST a new signal to /publish_signal
-# Body:
-# {
-#   "symbol": "BTC/USDT",
-#   "signal": "BUY",
-#   "meta": {...},
-#   "broadcast": true  # if true, send notifications to all valid keys
-# }
+
+# ---------- publish signal (worker/admin) ----------
 @app.route("/publish_signal", methods=["POST"])
 def publish_signal():
     data = request.json or {}
@@ -127,41 +113,38 @@ def publish_signal():
         "meta": meta,
         "timestamp": now_iso()
     }
-    # Save signal doc
-    doc_ref = db.collection("signals").add(entry)
+    db.collection("signals").add(entry)
 
-    # Publish notifications for all valid keys (one notification doc per key)
+    sent = 0
     if broadcast:
         keys_snap = db.collection("keys").get()
-        sent = 0
-        for kdoc in keys_snap:
-            if is_key_valid(kdoc):
-                # each notification references a key
+        for kd in keys_snap:
+            if is_key_valid_doc(kd):
                 notif = {
-                    "key": kdoc.id,
+                    "key": kd.id,
                     "signal": entry,
                     "message": f"{signal} - {symbol}",
                     "timestamp": now_iso()
                 }
                 db.collection("notifications").add(notif)
                 sent += 1
-        return jsonify({"saved": True, "sent_notifications": sent})
-    return jsonify({"saved": True, "sent_notifications": 0})
+    return jsonify({"saved": True, "sent": sent})
 
-# Get recent signals (public)
+
+# ---------- signals listing ----------
 @app.route("/signals", methods=["GET"])
 def get_signals():
     limit = int(request.args.get("limit", 50))
     snap = db.collection("signals").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit).get()
-    results = []
+    out = []
     for d in snap:
         rec = d.to_dict()
         rec["id"] = d.id
-        results.append(rec)
-    return jsonify(results)
+        out.append(rec)
+    return jsonify(out)
 
-# ------------------ NOTIFICATIONS (admin-only manual broadcast) ------------------
-# Admin posts to send_notification; only admin secret allowed
+
+# ---------- admin broadcast (protected) ----------
 @app.route("/send_notification", methods=["POST"])
 def send_notification():
     auth_header = request.headers.get("X-Admin-Secret", "")
@@ -172,14 +155,12 @@ def send_notification():
     symbol = data.get("symbol", "GENERIC")
     signal = data.get("signal", "INFO")
     price = data.get("price", "-")
-
-    # push per-key notifications to valid keys
-    keys_snap = db.collection("keys").get()
     sent = 0
-    for kdoc in keys_snap:
-        if is_key_valid(kdoc):
+    keys_snap = db.collection("keys").get()
+    for kd in keys_snap:
+        if is_key_valid_doc(kd):
             notif = {
-                "key": kdoc.id,
+                "key": kd.id,
                 "signal": {"signal": signal, "meta": {"symbol": symbol, "last_price": price}},
                 "message": message,
                 "timestamp": now_iso()
@@ -188,20 +169,16 @@ def send_notification():
             sent += 1
     return jsonify({"sent_to": sent})
 
-# ------------------ TRANSACTIONS (deposit/withdraw) ------------------
-# For production: expand with real ccxt trades, wallet transfers, KYC and safety checks.
-# /deposit and /withdraw accept: user (email or uid), broker, amount, optional api_key & secret (or use saved credentials)
+
+# ---------- transactions / deposit / withdraw ----------
 @app.route("/deposit", methods=["POST"])
 def deposit():
     data = request.json or {}
     user = data.get("user", "guest")
     broker = (data.get("broker") or "").lower()
     amount = data.get("amount")
-    api_key = data.get("api_key")
-    secret_key = data.get("secret_key")
-
     if not all([user, broker, amount]):
-        return jsonify({"error": "Missing user/broker/amount"}), 400
+        return jsonify({"error": "user/broker/amount required"}), 400
 
     entry = {
         "user": user,
@@ -212,24 +189,23 @@ def deposit():
         "created_at": now_iso()
     }
     ref = db.collection("transactions").add(entry)
-    tx_id = ref[1].id
+    txid = ref[1].id
 
-    # Broker handling
     try:
         if broker in ["binance", "exness"]:
-            # For demo: mark completed (replace with real API transfer/chain call)
-            db.collection("transactions").document(tx_id).update({"status": "completed", "completed_at": now_iso()})
-            return jsonify({"tx_id": tx_id, "status": "completed"})
+            # PLACEHOLDER: integrate real API withdraw/transfer via ccxt or provider SDK
+            db.collection("transactions").document(txid).update({"status": "completed", "completed_at": now_iso()})
+            return jsonify({"tx_id": txid, "status": "completed"})
         elif broker in ["zerodha", "angelone"]:
-            # Cannot deposit via API easily: redirect user to official site/payment
             redirect_url = "https://kite.zerodha.com/funds" if broker == "zerodha" else "https://trade.angelone.in"
-            db.collection("transactions").document(tx_id).update({"redirect_url": redirect_url})
-            return jsonify({"tx_id": tx_id, "status": "redirect", "redirect_url": redirect_url})
+            db.collection("transactions").document(txid).update({"redirect_url": redirect_url})
+            return jsonify({"tx_id": txid, "status": "redirect", "redirect_url": redirect_url})
         else:
-            return jsonify({"tx_id": tx_id, "status": "unsupported", "message": "Unsupported broker"}), 400
+            return jsonify({"tx_id": txid, "status": "unsupported"}), 400
     except Exception as e:
-        db.collection("transactions").document(tx_id).update({"status": "failed", "error": str(e)})
-        return jsonify({"tx_id": tx_id, "status": "failed", "error": str(e)}), 500
+        db.collection("transactions").document(txid).update({"status": "failed", "error": str(e)})
+        return jsonify({"tx_id": txid, "status": "failed", "error": str(e)}), 500
+
 
 @app.route("/withdraw", methods=["POST"])
 def withdraw():
@@ -237,11 +213,8 @@ def withdraw():
     user = data.get("user", "guest")
     broker = (data.get("broker") or "").lower()
     amount = data.get("amount")
-    api_key = data.get("api_key")
-    secret_key = data.get("secret_key")
-
     if not all([user, broker, amount]):
-        return jsonify({"error": "Missing user/broker/amount"}), 400
+        return jsonify({"error": "user/broker/amount required"}), 400
 
     entry = {
         "user": user,
@@ -252,27 +225,26 @@ def withdraw():
         "created_at": now_iso()
     }
     ref = db.collection("transactions").add(entry)
-    tx_id = ref[1].id
+    txid = ref[1].id
 
     try:
         if broker in ["binance", "exness"]:
-            # For demo: mark completed (replace with proper API withdraw call)
-            db.collection("transactions").document(tx_id).update({"status": "completed", "completed_at": now_iso()})
-            return jsonify({"tx_id": tx_id, "status": "completed"})
+            db.collection("transactions").document(txid).update({"status": "completed", "completed_at": now_iso()})
+            return jsonify({"tx_id": txid, "status": "completed"})
         elif broker in ["zerodha", "angelone"]:
             redirect_url = "https://kite.zerodha.com/funds" if broker == "zerodha" else "https://trade.angelone.in"
-            db.collection("transactions").document(tx_id).update({"redirect_url": redirect_url})
-            return jsonify({"tx_id": tx_id, "status": "redirect", "redirect_url": redirect_url})
+            db.collection("transactions").document(txid).update({"redirect_url": redirect_url})
+            return jsonify({"tx_id": txid, "status": "redirect", "redirect_url": redirect_url})
         else:
-            return jsonify({"tx_id": tx_id, "status": "unsupported", "message": "Unsupported broker"}), 400
+            return jsonify({"tx_id": txid, "status": "unsupported"}), 400
     except Exception as e:
-        db.collection("transactions").document(tx_id).update({"status": "failed", "error": str(e)})
-        return jsonify({"tx_id": tx_id, "status": "failed", "error": str(e)}), 500
+        db.collection("transactions").document(txid).update({"status": "failed", "error": str(e)})
+        return jsonify({"tx_id": txid, "status": "failed", "error": str(e)}), 500
 
-# Admin: list transactions (GET), update status (PATCH)
+
 @app.route("/transactions", methods=["GET"])
 def list_transactions():
-    limit = int(request.args.get("limit", "50"))
+    limit = int(request.args.get("limit", 50))
     snap = db.collection("transactions").order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit).get()
     out = []
     for d in snap:
@@ -280,6 +252,7 @@ def list_transactions():
         rec["id"] = d.id
         out.append(rec)
     return jsonify(out)
+
 
 @app.route("/transactions/<txid>", methods=["PATCH"])
 def patch_transaction(txid):
@@ -293,18 +266,18 @@ def patch_transaction(txid):
     db.collection("transactions").document(txid).update({"status": status, "updated_at": now_iso()})
     return jsonify({"updated": True})
 
-# ------------------ CLEANUP UTILS (optional endpoints) ------------------
-# Endpoint to run cleanup (admin only)
+
+# ---------- cleanup endpoint (admin only) ----------
 @app.route("/cleanup", methods=["POST"])
 def cleanup():
     auth = request.headers.get("X-Admin-Secret", "")
     if auth != PTH_ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 403
-    # Delete expired keys and cancel old processing txns (>7 days)
+
     deleted = 0
     snap = db.collection("keys").get()
     for d in snap:
-        info = d.to_dict()
+        info = d.to_dict() or {}
         exp = info.get("expiry")
         if exp:
             try:
@@ -313,12 +286,12 @@ def cleanup():
                     deleted += 1
             except Exception:
                 pass
-    # Cancel old processing txns older than 7 days
+
     cutoff = datetime.utcnow() - timedelta(days=7)
-    txsnap = db.collection("transactions").where("status", "==", "processing").get()
     cancelled = 0
+    txsnap = db.collection("transactions").where("status", "==", "processing").get()
     for t in txsnap:
-        tdata = t.to_dict()
+        tdata = t.to_dict() or {}
         created = tdata.get("created_at")
         try:
             if created and datetime.fromisoformat(created) < cutoff:
@@ -328,6 +301,7 @@ def cleanup():
             pass
     return jsonify({"deleted_keys": deleted, "cancelled_tx": cancelled})
 
-# ------------------ RUN ------------------
+
+# ---------- run ----------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=PORT)
