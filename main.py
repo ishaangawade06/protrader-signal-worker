@@ -3,6 +3,7 @@ from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -43,29 +44,74 @@ def validate_key():
     return jsonify({"valid": True, "role": info.get("role", "user")})
 
 # =====================================================
-# 💳 Deposit / Withdraw Tracking
+# 💳 Deposit / Withdraw (Broker Integrated)
 # =====================================================
-@app.route("/transaction", methods=["POST"])
-def transaction():
+@app.route("/deposit", methods=["POST"])
+def deposit():
     data = request.json
     user = data.get("user")
     broker = data.get("broker")
-    ttype = data.get("type")
+    amount = data.get("amount", 0)
 
-    if not all([user, broker, ttype]):
+    if not all([user, broker, amount]):
         return jsonify({"error": "Missing fields"}), 400
 
     entry = {
         "user": user,
         "broker": broker,
-        "type": ttype,
+        "type": "deposit",
+        "amount": amount,
         "status": "processing",
         "timestamp": datetime.utcnow().isoformat()
     }
 
-    ref = db.collection("transactions").add(entry)
-    return jsonify({"message": "Transaction logged", "id": ref[1].id, "entry": entry})
+    # Handle broker cases
+    if broker.lower() in ["zerodha", "angelone"]:
+        entry["redirect_url"] = f"https://{broker}.com/deposit"
+    elif broker.lower() == "binance":
+        # Example Binance API call (pseudo)
+        entry["status"] = "completed"
+    elif broker.lower() == "exness":
+        # Example Exness API call (pseudo)
+        entry["status"] = "completed"
 
+    ref = db.collection("transactions").add(entry)
+    entry["id"] = ref[1].id
+    return jsonify(entry)
+
+@app.route("/withdraw", methods=["POST"])
+def withdraw():
+    data = request.json
+    user = data.get("user")
+    broker = data.get("broker")
+    amount = data.get("amount", 0)
+
+    if not all([user, broker, amount]):
+        return jsonify({"error": "Missing fields"}), 400
+
+    entry = {
+        "user": user,
+        "broker": broker,
+        "type": "withdraw",
+        "amount": amount,
+        "status": "processing",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    if broker.lower() in ["zerodha", "angelone"]:
+        entry["redirect_url"] = f"https://{broker}.com/withdraw"
+    elif broker.lower() == "binance":
+        entry["status"] = "completed"
+    elif broker.lower() == "exness":
+        entry["status"] = "completed"
+
+    ref = db.collection("transactions").add(entry)
+    entry["id"] = ref[1].id
+    return jsonify(entry)
+
+# =====================================================
+# 📜 Transactions
+# =====================================================
 @app.route("/transactions", methods=["GET"])
 def transactions():
     snap = db.collection("transactions").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).get()
@@ -96,20 +142,14 @@ def send_notification():
         return jsonify({"error": "Unauthorized"}), 403
 
     data = request.json or {}
-    message = data.get("message", "")
-    symbol = data.get("symbol", "GENERIC")
-    signal = data.get("signal", "INFO")
-    price = data.get("price", "-")
-
     entry = {
-        "message": message,
-        "symbol": symbol,
-        "signal": signal,
-        "price": price,
+        "message": data.get("message", ""),
+        "symbol": data.get("symbol", "GENERIC"),
+        "signal": data.get("signal", "INFO"),
+        "price": data.get("price", "-"),
         "timestamp": datetime.utcnow().isoformat()
     }
     db.collection("notifications").add(entry)
-
     return jsonify({"sent_to": "all_valid_users", "entry": entry})
 
 # =====================================================
